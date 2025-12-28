@@ -2,9 +2,125 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <cstdint>
+#include <cstdio>
+#include <ctime>
+#include <cstdarg>
 
 
-#define UPLAY_EXPORT extern "C" _declspec(dllexport)
+#define UPLAY_EXPORT extern "C" __declspec(dllexport)
+
+static FILE* g_LogFile = NULL;
+static FILE* g_ConsoleOut = NULL;
+static bool g_LogInitialized = false;
+static bool g_LoggingEnabled = false;
+static bool g_ConsoleEnabled = false;
+static char g_LogPath[MAX_PATH] = {0};
+
+void ReadLoggingConfig()
+{
+	// Read logging settings from INI early
+	CHAR INI[MAX_PATH] = {0};
+	GetModuleFileNameA(UplayModule, INI, MAX_PATH);
+	char* p = strrchr(INI, '\\');
+	if (p) strcpy(p + 1, "Uplay.ini");
+	else strcpy(INI, "Uplay.ini");
+	
+	if (GetFileAttributesA(INI) != INVALID_FILE_ATTRIBUTES) {
+		g_LoggingEnabled = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
+		g_ConsoleEnabled = GetPrivateProfileIntA("Uplay", "EnableConsole", 0, INI) == TRUE;
+	}
+}
+
+void InitConsole()
+{
+	if (!g_ConsoleEnabled || g_ConsoleOut) return;
+	
+	if (AllocConsole()) {
+		SetConsoleTitleA("Uplay Emu Console");
+		
+		freopen_s(&g_ConsoleOut, "CONOUT$", "w", stdout);
+		
+		HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+	}
+}
+
+void InitLog()
+{
+	if (!g_LogInitialized)
+	{
+		g_LogInitialized = true;
+		
+		if (!g_LoggingEnabled && !g_ConsoleEnabled) {
+			ReadLoggingConfig();
+		}
+		
+		if (g_ConsoleEnabled) {
+			InitConsole();
+		}
+		
+		if (!g_LoggingEnabled) return;
+		
+		GetModuleFileNameA(UplayModule, g_LogPath, MAX_PATH);
+		char* p = strrchr(g_LogPath, '\\');
+		if (p) strcpy(p + 1, "uplay_emu.log");
+		else strcpy(g_LogPath, "uplay_emu.log");
+		
+		g_LogFile = fopen(g_LogPath, "a");
+		if (g_LogFile) {
+			time_t now = time(NULL);
+			struct tm* t = localtime(&now);
+			fflush(g_LogFile);
+		}
+	}
+}
+
+void LogWrite(const char* format, ...)
+{
+	if (!g_LogFile && !g_ConsoleOut) return;
+	
+	// Timestamp
+	time_t now = time(NULL);
+	struct tm* t = localtime(&now);
+	char timestamp[32];
+	sprintf(timestamp, "[%02d:%02d:%02d] ", t->tm_hour, t->tm_min, t->tm_sec);
+	
+	// Format message
+	char buffer[2048];
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+
+	if (g_LogFile) {
+		fprintf(g_LogFile, "%s%s\n", timestamp, buffer);
+		fflush(g_LogFile);
+	}
+	
+	if (g_ConsoleOut) {
+		printf("%s%s\n", timestamp, buffer);
+	}
+}
+
+#define LOG_FUNC() do { InitLog(); if (g_LogFile || g_ConsoleOut) LogWrite("[Uplay Emu] %s called", __FUNCTION__); } while(0)
+
+#define SAVE_HEADER_SIZE 552
+
+struct SaveSlot {
+    DWORD mode;           // 0 = read, 1 = write
+    DWORD slotId;
+    HANDLE fileHandle;
+    char saveName[512];
+    bool inUse;
+};
+
+static SaveSlot g_SaveSlots[256] = {0};
+static char g_SavePath[MAX_PATH] = {0};
+static bool g_SavePathInit = false;
+
+// Forward declaration - will be set in UPLAY_Start
+void InitSavePath(const char* userName, DWORD appId);
+void GetSaveFilePath(DWORD slotId, char* outPath);
 
 HANDLE fileuplay = 0;
 void* DirectoryBuffer = 0;
@@ -66,6 +182,7 @@ namespace Uplay_Configuration
 	char TickedId[1024] = { "noT456umPqRt" };
 	bool Offline = false;
 	bool appowned = true;
+	bool logging = false;
 
 	int cdkey1 = 0;
 	int cdkey2 = 0;
@@ -156,125 +273,149 @@ bool IsTargetExist(LPCSTR path)
 	return true;
 }
 
-
-
-// Exports implementations
-
-
 UPLAY_EXPORT int UPLAY_ACH_EarnAchievement()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ACH_GetAchievementImage()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ACH_GetAchievements()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementImage()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ACH_Write()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_AVATAR_Get(void* buf1)
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_AVATAR_GetAvatarIdForCurrentUser()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_AVATAR_GetBitmap()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_AVATAR_Release()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_ClearGameSession()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_AddPlayedWith()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_AddToBlackList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_DisableFriendMenuItem()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_EnableFriendMenuItem()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_GetFriendList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_Init()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_InviteToGame()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_IsBlackListed()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_IsFriend()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_RemoveFriendship()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_RemoveFromBlackList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_RequestFriendship()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_RespondToGameInvite()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_ShowFriendSelectionUI()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_ShowInviteFriendsToGameUI()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetLastError()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetNextEvent()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
 {
+	LOG_FUNC();
 	Overmapped* ovr = (Overmapped*)buf1;
 	if (!ovr->f4) {
 		return 0;
@@ -286,20 +427,25 @@ UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
 }
 UPLAY_EXPORT int UPLAY_HasOverlappedOperationCompleted(void* buf1)
 {
+	LOG_FUNC();
 	Overmapped* ovr = (Overmapped*)buf1;
 	return ovr->f4;
 }
-UPLAY_EXPORT int UPLAY_INSTALLER_AreChunksInstalled()
+UPLAY_EXPORT int UPLAY_INSTALLER_AreChunksInstalled(void* chunkIds, int chunkCount, void* outResult)
 {
-	return 0;
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] AreChunksInstalled: chunkIds=%p, count=%d", chunkIds, chunkCount);
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_INSTALLER_GetChunkIdsFromTag()
 {
+	LOG_FUNC();
 	return 0;
 }
 Chunks* chunks = 0;
 UPLAY_EXPORT int UPLAY_INSTALLER_GetChunks(void* buf1)
 {
+	LOG_FUNC();
 	chunks = (Chunks*)VirtualAlloc(0, 10, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
 	chunks->d1 = 1;
 	chunks->d2 = VirtualAlloc(0, 1000, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
@@ -313,465 +459,629 @@ UPLAY_EXPORT int UPLAY_INSTALLER_GetChunks(void* buf1)
 }
 UPLAY_EXPORT const char* UPLAY_INSTALLER_GetLanguageUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::GameLanguage;
 }
 UPLAY_EXPORT int UPLAY_INSTALLER_Init()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_INSTALLER_ReleaseChunkIdList()
 {
+	LOG_FUNC();
 	VirtualFree((void*)chunks, 0, MEM_DECOMMIT);
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_INSTALLER_UpdateInstallOrder()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_Init()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_METADATA_ClearContinuousTag()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_METADATA_SetContinuousTag()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_METADATA_SetSingleEventTag()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Apply()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Close()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Enumerate()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Get()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Open()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_ReleaseKeyValueList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_Set()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OPTIONS_SetInGameState()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_SetShopUrl()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_Show()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_ShowBrowserUrl()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_ShowFacebookAuthentication()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_ShowNotification()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_OVERLAY_ShowShopUrl()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_DisablePartyMemberMenuItem()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_EnablePartyMemberMenuItem()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_GetFullMemberList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_GetId()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_GetInGameMemberList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_Init()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_InvitePartyToGame()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_InviteToParty()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_IsInParty()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_IsPartyLeader()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_PromoteToLeader()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_RespondToGameInvite()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_SetGuest()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PARTY_SetUserData()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_PARTY_ShowGameInviteOverlayUI()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_PRESENCE_SetPresence()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_PeekNextEvent()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_Quit()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_Release()
 {
+	LOG_FUNC();
 	return 1;
 }
-const char* savefile = "";
-long position = 0;
-long firstpos = 0;
-void* tempbuffer = VirtualAlloc(NULL, 0x80000, MEM_COMMIT, PAGE_READWRITE);
-UPLAY_EXPORT int UPLAY_SAVE_Close(HANDLE hFiledata)
+
+void InitSavePath(const char* userName, DWORD appId) {
+    if (g_SavePathInit) return;
+    
+    // Get module directory
+    char basePath[MAX_PATH];
+    GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
+    char* p = strrchr(basePath, '\\');
+    if (p) *p = 0;
+    
+    // Build save path: basePath\UplaySaves\userName\appId
+    sprintf(g_SavePath, "%s\\UplaySaves\\%s\\%u", basePath, userName, appId);
+    
+    // Create directory structure
+    char createPath[MAX_PATH];
+    strcpy(createPath, g_SavePath);
+    for (char* cp = createPath; *cp; cp++) {
+        if (*cp == '\\') {
+            *cp = 0;
+            CreateDirectoryA(createPath, NULL);
+            *cp = '\\';
+        }
+    }
+    CreateDirectoryA(createPath, NULL);
+    
+    g_SavePathInit = true;
+    LogWrite("[Uplay Emu] Save path initialized: %s", g_SavePath);
+}
+
+void GetSaveFilePath(DWORD slotId, char* outPath) {
+    sprintf(outPath, "%s\\%lu.save", g_SavePath, slotId);
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 {
-	SetFilePointer(hFiledata, 0, 0, 0);
-	DWORD data = 0;
-	DWORD datat = 0;
-	ReadFile(hFiledata, &data, 4, &datat, 0);
-	DWORD tt = 0x224;
-	if (data == 0)
-	{
-		SetFilePointer(hFiledata, 0, 0, 0);
-		WriteFile(hFiledata, &tt, 4, &data, 0);
-		SetFilePointer(hFiledata, 0x28, 0, 0);
-		for (std::vector<MyFileRef>::size_type f = 0; f < FileVector.size(); f++)	// Search thorugh initialized files
-		{
-			if (FileVector[f].hFile == hFiledata)
-			{
-				WriteFile(hFiledata, FileVector[f].nameoffile, 0x200, &data, NULL);
-				break;
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_Close: slotId=%lu", slotId);
+	
+	if (slotId >= 256 || !g_SaveSlots[slotId].inUse)
+		return 0;
+	
+	SaveSlot* slot = &g_SaveSlots[slotId];
+	
+	// If mode was 1 (write), write the header
+	if (slot->mode == 1) {
+		if (slot->saveName[0] == 0)
+			strcpy(slot->saveName, "Unnamed");
+		
+		char savePath[MAX_PATH];
+		GetSaveFilePath(slotId, savePath);
+		
+		HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, 
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hFile != INVALID_HANDLE_VALUE) {
+			// Create 552-byte header
+			BYTE header[SAVE_HEADER_SIZE] = {0};
+			
+			// Write header size - 4 at offset 0
+			DWORD headerSizeValue = SAVE_HEADER_SIZE - 4;
+			memcpy(header, &headerSizeValue, 4);
+			
+			// Write save name as Unicode at offset 40
+			int nameLen = strlen(slot->saveName);
+			for (int i = 0; i < nameLen && (40 + i*2 + 1) < SAVE_HEADER_SIZE; i++) {
+				header[40 + i*2] = (BYTE)slot->saveName[i];
+				header[40 + i*2 + 1] = 0;
 			}
+			
+			SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+			DWORD written;
+			WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
+			CloseHandle(hFile);
+			LogWrite("[Uplay Emu] Header written for slot %lu", slotId);
 		}
-		SetFilePointer(hFiledata, 0, 0, 0);
 	}
-	CloseHandle(hFiledata);
+	
+	// Close file handle if exists
+	if (slot->fileHandle && slot->fileHandle != INVALID_HANDLE_VALUE) {
+		CloseHandle(slot->fileHandle);
+	}
+	
+	// Clear slot
+	memset(slot, 0, sizeof(SaveSlot));
 	return 1;
 }
-const char* dir = 0;
-int whichfile = 0;
-char name[4024] = { 0 };
-UPLAY_EXPORT int UPLAY_SAVE_GetSavegames(void* listpointer, void* mystruct)
+
+UPLAY_EXPORT int UPLAY_SAVE_GetSavegames(void* outListPtr, void* overlapped)
 {
-	void* FirstPointer = VirtualAlloc(NULL, 0x80000, MEM_COMMIT, PAGE_READWRITE);
-	void* SecondPointer = VirtualAlloc(NULL, 0x80000, MEM_COMMIT, PAGE_READWRITE);
-	ULONG_PTR SecondPointerAddr = (ULONG_PTR)SecondPointer;
-	const char* myconstant = AttachDirFile(dir, "*.save");
-	ULONG_PTR valueofiles = 0;
-	WIN32_FIND_DATAA fd = { 0 };
-	HANDLE firstFile = FindFirstFileA(myconstant, &fd);
-
-	if (firstFile != INVALID_HANDLE_VALUE)
-	{
-		do
-		{
-
-			if (fd.dwFileAttributes == FILE_ATTRIBUTE_ARCHIVE)
-			{
-				void* ThirdPointer = VirtualAlloc(NULL, 0x3000, MEM_COMMIT, PAGE_READWRITE);
-				int filecounternm = 0;
-				char bytesdat[270] = { 0 };
-				strcpy(bytesdat, (char*)fd.cFileName);
-				int size = strlen(bytesdat);
-				for (int i = size; i > 0; i--)
-				{
-					if (bytesdat[i] == '.')
-					{
-						memset(&bytesdat[i], 0, size - i);
-						filecounternm = strtoull(bytesdat, NULL, 16);
-						break;
+	LOG_FUNC();
+	
+	// Find all .save files in save directory
+	char searchPath[MAX_PATH];
+	sprintf(searchPath, "%s\\*.save", g_SavePath);
+	
+	// Count files first
+	WIN32_FIND_DATAA fd;
+	HANDLE hFind = FindFirstFileA(searchPath, &fd);
+	DWORD fileCount = 0;
+	
+	if (hFind != INVALID_HANDLE_VALUE) {
+		do {
+			if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				fileCount++;
+		} while (FindNextFileA(hFind, &fd));
+		FindClose(hFind);
+	}
+	
+	LogWrite("[Uplay Emu] Found %lu save files", fileCount);
+	
+	// Allocate list structure
+	void* listBuffer = VirtualAlloc(NULL, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+	void* entriesBuffer = VirtualAlloc(NULL, 0x10000, MEM_COMMIT, PAGE_READWRITE);
+	
+	ULONG_PTR* listHeader = (ULONG_PTR*)listBuffer;
+	listHeader[0] = fileCount;  // count
+	listHeader[1] = (ULONG_PTR)entriesBuffer;  // pointer to entries
+	
+	// Fill entries
+	hFind = FindFirstFileA(searchPath, &fd);
+	DWORD entryIndex = 0;
+	
+	if (hFind != INVALID_HANDLE_VALUE) {
+		do {
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				continue;
+			
+			// Parse slot ID from filename
+			DWORD slotId = strtoul(fd.cFileName, NULL, 10);
+			
+			// Build full path
+			char fullPath[MAX_PATH];
+			sprintf(fullPath, "%s\\%s", g_SavePath, fd.cFileName);
+			
+			// Get file size
+			HANDLE hFile = CreateFileA(fullPath, GENERIC_READ, FILE_SHARE_READ, NULL,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			DWORD fileSize = 0;
+			char saveName[256] = "Unnamed";
+			
+			if (hFile != INVALID_HANDLE_VALUE) {
+				fileSize = GetFileSize(hFile, NULL);
+				if (fileSize > SAVE_HEADER_SIZE)
+					fileSize -= SAVE_HEADER_SIZE;
+				else
+					fileSize = 0;
+				
+				// Read save name from header
+				BYTE header[SAVE_HEADER_SIZE];
+				DWORD bytesRead;
+				if (ReadFile(hFile, header, SAVE_HEADER_SIZE, &bytesRead, NULL) && bytesRead >= SAVE_HEADER_SIZE) {
+					// Extract Unicode name from offset 40
+					int nameIdx = 0;
+					for (int i = 40; i < SAVE_HEADER_SIZE - 1 && nameIdx < 255; i += 2) {
+						if (header[i] == 0 && header[i+1] == 0) break;
+						saveName[nameIdx++] = (char)header[i];
 					}
+					saveName[nameIdx] = 0;
 				}
-				HANDLE hFoundFile = CreateFileA(AttachDirFile(dir, (char*)fd.cFileName), GENERIC_READ, 1, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-				DWORD FileSize = GetFileSize(hFoundFile, NULL);
-				DWORD val = FileSize - 0x228;
-				DWORD FilePointer = SetFilePointer(hFoundFile, 0x28, NULL, NULL);
-				DWORD bytesreaded = 0;
-				char* datar2 = (char*)VirtualAlloc(NULL, 0x200, MEM_COMMIT, PAGE_READWRITE);
-				ReadFile(hFoundFile, datar2, 0x200, &bytesreaded, NULL);
-				FileList* flst = (FileList*)ThirdPointer;
-				flst->bufferstring = datar2;
-				flst->num = (DWORD)filecounternm;
-				flst->pointer = val;
-#ifdef _WIN64
-				memcpy((void*)SecondPointerAddr, &ThirdPointer, 8);
-				SecondPointerAddr += 8;
-#else
-				memcpy((void*)SecondPointerAddr, &ThirdPointer, 4);
-				SecondPointerAddr += 4;
-#endif			
-				CloseHandle(hFoundFile);
-				valueofiles++;
+				CloseHandle(hFile);
 			}
-
-		} while (FindNextFileA(firstFile, &fd) == TRUE);
-		FindClose(firstFile);
-#ifdef _WIN64
-		memcpy(FirstPointer, &valueofiles, 8);
-		memcpy((void*)((ULONG_PTR)FirstPointer + 8), &SecondPointer, 8);
-#else
-		memcpy(FirstPointer, &valueofiles, 4);
-		memcpy((void*)((ULONG_PTR)FirstPointer + 4), &SecondPointer, 4);
-#endif
+			
+			// Allocate entry structure
+			void* entryBuffer = VirtualAlloc(NULL, 0x100, MEM_COMMIT, PAGE_READWRITE);
+			
+			// FileList structure: { DWORD num, void* bufferstring, DWORD pointer(size) }
+			DWORD* entry = (DWORD*)entryBuffer;
+			char* nameBuffer = (char*)VirtualAlloc(NULL, 0x200, MEM_COMMIT, PAGE_READWRITE);
+			strcpy(nameBuffer, saveName);
+			
+			entry[0] = slotId;              // id
+			*(void**)&entry[1] = nameBuffer; // name pointer
+			entry[2] = fileSize;            // size
+			
+			// Store entry pointer in entries array
+			((void**)entriesBuffer)[entryIndex++] = entryBuffer;
+			
+		} while (FindNextFileA(hFind, &fd));
+		FindClose(hFind);
 	}
-#ifdef _WIN64
-	memcpy(listpointer, &FirstPointer, 8);
-#else
-	memcpy(listpointer, &FirstPointer, 4);
-#endif
-	FileRead * flr = (FileRead*)mystruct;
-	flr->addr1++;
-	flr->addr2 = 1;
-	flr->addr3 = 0;
-
+	
+	// Write list pointer
+	memcpy(outListPtr, &listBuffer, sizeof(void*));
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
 	return 1;
 }
-UPLAY_EXPORT int UPLAY_SAVE_Open(int dp1, int dp2, void* buf1, void* buf2)		// Init UPLAY SAVES
-{
-	char file[1024] = { 0 };
-	sprintf(file, "0x%x.save", dp1);
-	whichfile = dp1;
-	savefile = AttachDirFile(dir, file);
-	tempbuffer = VirtualAlloc(0, 0x228, MEM_COMMIT, PAGE_READWRITE);
-	MyFileRef ref = { 0 };
-	if (dp2 == 0)
-	{
-		FileOpen* fp = (FileOpen*)buf1;
-		FileOpenTwo* fp2 = (FileOpenTwo*)buf2;
-		HANDLE fileuplayt = CreateFileA(savefile, GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (fileuplayt == INVALID_HANDLE_VALUE)
-		{
-			fp2->addr1++;
-			fp2->addr2 = 1;
-			fp2->addr3 = 0;
-			return 0;
-		}
-		fp->d1 = (DWORD)fileuplayt;
-		fp2->addr1++;
-		fp2->addr2 = 1;
-		fp2->addr3 = 0;
-		ref.hFile = fileuplayt;
-		ref.numfile = dp1;
-		FileVector.push_back(ref);
-		return 1;
-	}
-	else
-	{
-		FileOpen* fp = (FileOpen*)buf1;
-		FileOpenTwo* fp2 = (FileOpenTwo*)buf2;
-		HANDLE fileuplayt = CreateFileA(savefile, SE_GROUP_LOGON_ID, NULL, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (fileuplayt == INVALID_HANDLE_VALUE)
-		{
-			fp2->addr1++;
-			fp2->addr2 = 1;
-			fp2->addr3 = 0;
-			return 0;
-		}
-		DWORD ld;
-		WriteFile(fileuplayt, tempbuffer, 0x228, &ld, 0);
-		fp->d1 = (DWORD)fileuplayt;
-		fp2->addr1++;
-		fp2->addr2 = 1;
-		fp2->addr3 = 0;
-		ref.hFile = fileuplayt;
-		ref.numfile = dp1;
-		FileVector.push_back(ref);
-		return 1;
-	}
-	return 0;
-}
-UPLAY_EXPORT int UPLAY_SAVE_Read(HANDLE hFile, SIZE_T datatoread, long offset, void* dt1, DWORD * bytesreaded, void* mystruct)
-{
-	void* ReadedData = 0;
-	if (hFile != INVALID_HANDLE_VALUE)
-	{
-#ifdef _WIN64
-		memcpy(&ReadedData, dt1, 8);
-#else
-		memcpy(&ReadedData, dt1, 4);
-#endif 
-		SetFilePointer(hFile, 0x228 + offset, NULL, NULL);
-		DWORD wrote;
-		if (!ReadFile(hFile, ReadedData, datatoread, bytesreaded, NULL))
-		{
-			FileRead* flr = (FileRead*)mystruct;
-			flr->addr1++;
-			flr->addr2 = 1;
-			flr->addr3 = 0;
-			return 0;
-		}
-		FileRead* flr = (FileRead*)mystruct;
-		flr->addr1++;
-		flr->addr2 = 1;
-		flr->addr3 = 0;
-		return 1;
-	}
-	FileRead* flr = (FileRead*)mystruct;
-	flr->addr1++;
-	flr->addr2 = 1;
-	flr->addr3 = 0;
-	return 0;
-}
-UPLAY_EXPORT int UPLAY_SAVE_ReleaseGameList(void* listpointer)
-{
-	VirtualFree(listpointer, NULL, MEM_DECOMMIT);
-	return 1;
-}
-UPLAY_EXPORT int UPLAY_SAVE_Remove(int fileindex, void* filestruct)
-{
-	char file[1024] = { 0 };
-	sprintf(file, "%d.save", fileindex);
-	savefile = AttachDirFile(dir, file);
 
-	if (!DeleteFileA(savefile))
-	{
-		FileRead* flr = (FileRead*)filestruct;
-		flr->addr1++;
-		flr->addr2 = 1;
-		flr->addr3 = 0;
+UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void* overlapped)
+{
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_Open: slotId=%lu, mode=%lu", slotId, mode);
+	
+	if (slotId >= 256) {
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
 		return 0;
 	}
-	FileRead* flr = (FileRead*)filestruct;
-	flr->addr1++;
-	flr->addr2 = 1;
-	flr->addr3 = 0;
-	return 1;
-}
-UPLAY_EXPORT int UPLAY_SAVE_SetName(HANDLE hFileData, const char* namefile)
-{
-	for (std::vector<MyFileRef>::size_type f = 0; f < FileVector.size(); f++)	// Search thorugh initialized files
-	{
-		if (FileVector[f].hFile == hFileData)
-		{
-			strcpy(FileVector[f].nameoffile, namefile);
-			break;
-		}
-	}
-	return 1;
-}
-UPLAY_EXPORT int UPLAY_SAVE_Write(HANDLE hFile, SIZE_T datatowrite, void* buf1, void* buf2)
-{
-	if (hFile != INVALID_HANDLE_VALUE)
-	{
-		void* WriteData = 0;
-#ifdef _WIN64
-		memcpy(&WriteData, buf1, 8);
-#else
-		memcpy(&WriteData, buf1, 4);
-#endif // _WIN64
-		DWORD dat = 0;
-		FileRead* flr = (FileRead*)buf2;
-		if (!WriteFile(hFile, WriteData, datatowrite, &dat, NULL))
-		{
-			flr->addr1++;
-			flr->addr2 = 1;
-			flr->addr3 = 0;
+	
+	// Initialize slot
+	SaveSlot* slot = &g_SaveSlots[slotId];
+	memset(slot, 0, sizeof(SaveSlot));
+	slot->mode = mode;
+	slot->slotId = slotId;
+	slot->inUse = true;
+	
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	if (mode == 0) { // Read mode
+		HANDLE hFile = CreateFileA(savePath, GENERIC_READ, FILE_SHARE_READ, NULL,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hFile == INVALID_HANDLE_VALUE) {
+			LogWrite("[Uplay Emu] File not found: %s", savePath);
+			slot->inUse = false;
+			FileRead* ovr = (FileRead*)overlapped;
+			ovr->addr1++;
+			ovr->addr2 = 1;
+			ovr->addr3 = 0;
 			return 0;
 		}
-		
-		flr->addr1++;
-		flr->addr2 = 1;
-		flr->addr3 = 0;
-		return 1;
+		slot->fileHandle = hFile;
+	} else { // Write mode
+		// Create file with header if it doesn't exist
+		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
+				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+			if (hFile != INVALID_HANDLE_VALUE) {
+				BYTE header[SAVE_HEADER_SIZE] = {0};
+				DWORD written;
+				WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
+				CloseHandle(hFile);
+			}
+		}
+		slot->fileHandle = NULL;
 	}
-	FileRead* flr = (FileRead*)buf2;
-	flr->addr1++;
-	flr->addr2 = 1;
-	flr->addr3 = 0;
-	return 0;
+	
+	// Write slot ID to output handle
+	*(DWORD*)outHandle = slotId;
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
+	LogWrite("[Uplay Emu] SAVE_Open success");
+	return 1;
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, void* outBufferPtr, void* outBytesRead, void* overlapped)
+{
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_Read: slotId=%lu, bytes=%lu, offset=%lu", slotId, numBytes, offset);
+	
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	// Get actual buffer from pointer
+	void* actualBuffer = *(void**)outBufferPtr;
+	DWORD bytesRead = 0;
+	
+	HANDLE hFile = CreateFileA(savePath, GENERIC_READ, FILE_SHARE_READ, NULL,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	
+	if (hFile != INVALID_HANDLE_VALUE) {
+		// Seek past header + offset
+		SetFilePointer(hFile, SAVE_HEADER_SIZE + offset, NULL, FILE_BEGIN);
+		ReadFile(hFile, actualBuffer, numBytes, &bytesRead, NULL);
+		CloseHandle(hFile);
+		LogWrite("[Uplay Emu] Read %lu bytes", bytesRead);
+	}
+	
+	*(DWORD*)outBytesRead = bytesRead;
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
+	return (bytesRead > 0) ? 1 : 0;
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_ReleaseGameList(void* listPointer)
+{
+	LOG_FUNC();
+	if (listPointer) {
+		// Free the list (VirtualFree)
+		VirtualFree(listPointer, 0, MEM_RELEASE);
+	}
+	return 1;
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_Remove(DWORD slotId, void* overlapped)
+{
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_Remove: slotId=%lu", slotId);
+	
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	DeleteFileA(savePath);
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
+	return 1;
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_SetName(DWORD slotId, const char* nameUtf8)
+{
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_SetName: slotId=%lu, name=%s", slotId, nameUtf8 ? nameUtf8 : "(null)");
+	
+	if (slotId < 256 && g_SaveSlots[slotId].inUse && nameUtf8) {
+		strncpy(g_SaveSlots[slotId].saveName, nameUtf8, 511);
+		g_SaveSlots[slotId].saveName[511] = 0;
+	}
+	return 1;
+}
+
+UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr, void* overlapped)
+{
+	LOG_FUNC();
+	LogWrite("[Uplay Emu] SAVE_Write: slotId=%lu, bytes=%lu", slotId, numBytes);
+	
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	// Get actual buffer from pointer
+	void* actualBuffer = *(void**)bufferPtr;
+	if (!actualBuffer) {
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	
+	if (hFile != INVALID_HANDLE_VALUE) {
+		// Seek past header
+		SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
+		
+		DWORD written;
+		WriteFile(hFile, actualBuffer, numBytes, &written, NULL);
+		
+		// Truncate file to exact size
+		SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
+		SetEndOfFile(hFile);
+		
+		CloseHandle(hFile);
+		LogWrite("[Uplay Emu] Wrote %lu bytes", written);
+	}
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_STORE_Checkout()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_STORE_GetPartner()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_STORE_GetProducts()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_STORE_ReleaseProductsList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_STORE_ShowProductDetails()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_STORE_ShowProducts()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_SetGameSession()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_SetLanguage(const char* language)
 {
+	LOG_FUNC();
 	strcpy(Uplay_Configuration::GameLanguage, language);
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_Start()
 {
+	LOG_FUNC();
 	CHAR INI[MAX_PATH] = { 0 };					// Get ini directory
 	GetModuleFileNameA(UplayModule, INI, MAX_PATH);
 	int Size = lstrlenA(INI);
@@ -790,6 +1100,8 @@ UPLAY_EXPORT int UPLAY_Start()
 	}
 	Uplay_Configuration::appowned = GetPrivateProfileIntA("Uplay", "IsAppOwned", 0, INI) == TRUE;		// Read ini informations
 	Uplay_Configuration::Offline = GetPrivateProfileIntA("Uplay", "UplayConnection", 0, INI) == TRUE;
+	Uplay_Configuration::logging = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
+	g_LoggingEnabled = Uplay_Configuration::logging;
 	Uplay_Configuration::gameAppId = GetPrivateProfileIntA("Uplay", "AppId", 0, INI);
 	GetPrivateProfileStringA("Uplay", "Username", 0, Uplay_Configuration::UserName, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "Email", 0, Uplay_Configuration::UserEmail, 0x200, INI);
@@ -800,48 +1112,59 @@ UPLAY_EXPORT int UPLAY_Start()
 	GetPrivateProfileStringA("Uplay", "UserId", 0, Uplay_Configuration::UserId, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
 
-	dir = FormatDir("ApiLocalStorage", 0);			// Storage init
-	CreatePath(dir);
+	// Initialize save system
+	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
+	
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_StartCN()
 {
+	LOG_FUNC();
 	return UPLAY_Start();
 }
 UPLAY_EXPORT int UPLAY_Startup()
 {
+	LOG_FUNC();
 	return UPLAY_Start();
 }
 UPLAY_EXPORT int UPLAY_USER_ClearGameSession()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_USER_ConsumeItem()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_USER_GetAccountId()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetAccountIdUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::UserId;
 }
 UPLAY_EXPORT int UPLAY_USER_GetCPUScore()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetCdKeyUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::CdKey;
 }
 UPLAY_EXPORT int UPLAY_USER_GetCdKeys()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_USER_GetConsumableItems(void* buf1)
 {
+	LOG_FUNC();
 #ifdef _WIN64
 	memset(buf1, 0, 8);
 #else
@@ -851,129 +1174,173 @@ UPLAY_EXPORT int UPLAY_USER_GetConsumableItems(void* buf1)
 }
 UPLAY_EXPORT int UPLAY_USER_GetCredentials()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_USER_GetEmail()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetEmailUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::UserEmail;
 }
 UPLAY_EXPORT int UPLAY_USER_GetGPUScore()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_USER_GetGPUScoreConfidenceLevel()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetNameUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::UserName;
 }
 UPLAY_EXPORT int UPLAY_USER_GetPassword()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetPasswordUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::password;
 }
 UPLAY_EXPORT int UPLAY_USER_GetProfile()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetTicketUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::TickedId;
 }
 UPLAY_EXPORT int UPLAY_USER_GetUsername()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT const char* UPLAY_USER_GetUsernameUtf8()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::UserName;
 }
 UPLAY_EXPORT int UPLAY_USER_IsConnected()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_USER_IsInOfflineMode()
 {
+	LOG_FUNC();
 	return Uplay_Configuration::Offline;
 }
 UPLAY_EXPORT int UPLAY_USER_IsOwned(int data)
 {
+	LOG_FUNC();
 	return Uplay_Configuration::appowned;
 }
 UPLAY_EXPORT int UPLAY_USER_ReleaseCdKeyList()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_USER_ReleaseConsumeItemResult()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_USER_ReleaseProfile()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_USER_SetGameSession()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_Update()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_WIN_GetActions()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_WIN_GetRewards()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_WIN_GetUnitBalance()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_WIN_RefreshActions()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_WIN_ReleaseActionList()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_WIN_ReleaseRewardList()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_WIN_SetActionsCompleted()
 {
+	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_CHAT_GetHistory()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_CHAT_Init()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_CHAT_ReleaseHistoryList()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_CHAT_SendMessage()
 {
+	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_CHAT_SentMessagesRead()
 {
+	LOG_FUNC();
 	return 0;
+}
+
+UPLAY_EXPORT int UPLAY_PRODUCT_GetProductList(DWORD a1, DWORD a2, DWORD a3)
+{
+	LOG_FUNC();
+	return 1;
+}
+
+UPLAY_EXPORT int UPLAY_PRODUCT_ReleaseProductList(DWORD a1)
+{
+	LOG_FUNC();
+	return 1;
 }
