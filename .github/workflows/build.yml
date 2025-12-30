@@ -16,22 +16,24 @@ jobs:
         arch: [x64, x86]
         include:
           - arch: x64
-            mingw: x86_64-w64-mingw32
+            msystem: MINGW64
             suffix: "64"
             asi_loader_arch: "x64"
           - arch: x86
-            mingw: i686-w64-mingw32
+            msystem: MINGW32
             suffix: ""
             asi_loader_arch: "x86"
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: Setup MinGW
-      uses: egor-tensin/setup-mingw@v2
+
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
       with:
-        platform: ${{ matrix.arch }}
+        msystem: ${{ matrix.msystem }}
+        install: git mingw-w64-${{ matrix.msystem == 'MINGW64' && 'x86_64' || 'i686' }}-gcc make
+        update: true
         
     - name: Download Ultimate ASI Loader
       run: |
@@ -45,19 +47,19 @@ jobs:
       shell: pwsh
         
     - name: Build Emulator DLL (${{ matrix.arch }})
+      shell: msys2 {0}
       run: |
-        ${{ matrix.mingw }}-g++ -shared -static -o emu.upc_r1_loader${{ matrix.suffix }}.dll src/dllmain.cpp src/pch.cpp src/uplay_data.cpp -lkernel32 -luser32 -ladvapi32
-      shell: bash
+        g++ -shared -static -o emu.upc_r1_loader${{ matrix.suffix }}.dll src/dllmain.cpp src/pch.cpp src/uplay_data.cpp -lkernel32 -luser32 -ladvapi32
         
     - name: Build ASI Hook (${{ matrix.arch }})
+      shell: msys2 {0}
       run: |
-        ${{ matrix.mingw }}-g++ -shared -static -I include -I src/minhook/include -o uplay_asi${{ matrix.suffix }}.asi src/uplay_hook.cpp src/minhook/src/hook.c src/minhook/src/buffer.c src/minhook/src/trampoline.c src/minhook/src/hde/hde${{ matrix.suffix == '64' && '64' || '32' }}.c -lkernel32 -luser32
-      shell: bash
+        g++ -shared -static -I include -I src/minhook/include -o uplay_asi${{ matrix.suffix }}.asi src/uplay_hook.cpp src/minhook/src/hook.c src/minhook/src/buffer.c src/minhook/src/trampoline.c src/minhook/src/hde/hde${{ matrix.suffix == '64' && '64' || '32' }}.c -lkernel32 -luser32
       
     - name: Create standalone DLL
+      shell: bash
       run: |
         cp emu.upc_r1_loader${{ matrix.suffix }}.dll uplay_r1_loader${{ matrix.suffix }}.dll
-      shell: bash
       
     - name: Create ASI zip
       run: |
