@@ -13,16 +13,17 @@ jobs:
     
     strategy:
       matrix:
-        arch: [x64, x86]
         include:
           - arch: x64
             msystem: MINGW64
+            make_arch: "64"
             suffix: "64"
             asi_loader_arch: "x64"
           - arch: x86
             msystem: MINGW32
+            make_arch: "32"
             suffix: ""
-            asi_loader_arch: "x86"
+            asi_loader_arch: ""
     
     steps:
     - name: Checkout code
@@ -32,8 +33,12 @@ jobs:
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ matrix.msystem }}
-        install: git mingw-w64-${{ matrix.msystem == 'MINGW64' && 'x86_64' || 'i686' }}-gcc make
+        install: mingw-w64-${{ matrix.arch == 'x64' && 'x86_64' || 'i686' }}-gcc make
         update: true
+        
+    - name: Build with Make
+      shell: msys2 {0}
+      run: make ARCH=${{ matrix.make_arch }}
         
     - name: Download Ultimate ASI Loader
       run: |
@@ -45,21 +50,6 @@ jobs:
           Copy-Item $dinput8.FullName -Destination "dinput8.dll"
         }
       shell: pwsh
-        
-    - name: Build Emulator DLL (${{ matrix.arch }})
-      shell: msys2 {0}
-      run: |
-        g++ -shared -static -o emu.upc_r1_loader${{ matrix.suffix }}.dll src/dllmain.cpp src/pch.cpp src/uplay_data.cpp -lkernel32 -luser32 -ladvapi32
-        
-    - name: Build ASI Hook (${{ matrix.arch }})
-      shell: msys2 {0}
-      run: |
-        g++ -shared -static -I include -I src/minhook/include -o uplay_asi${{ matrix.suffix }}.asi src/uplay_hook.cpp src/minhook/src/hook.c src/minhook/src/buffer.c src/minhook/src/trampoline.c src/minhook/src/hde/hde${{ matrix.suffix == '64' && '64' || '32' }}.c -lkernel32 -luser32
-      
-    - name: Create standalone DLL
-      shell: bash
-      run: |
-        cp emu.upc_r1_loader${{ matrix.suffix }}.dll uplay_r1_loader${{ matrix.suffix }}.dll
       
     - name: Create ASI zip
       run: |
@@ -103,7 +93,7 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ steps.release_info.outputs.tag }}
-        name: Uplay R1${{ steps.release_info.outputs.tag }}
+        name: Uplay R1 ${{ steps.release_info.outputs.tag }}
         body: |          
           **Build Date:** ${{ steps.release_info.outputs.date }}
           
