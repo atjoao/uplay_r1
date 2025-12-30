@@ -1,0 +1,134 @@
+name: Build uplay emulator
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        arch: [x64, x86]
+        include:
+          - arch: x64
+            mingw: x86_64-w64-mingw32
+            suffix: "64"
+            asi_loader_arch: "x64"
+          - arch: x86
+            mingw: i686-w64-mingw32
+            suffix: ""
+            asi_loader_arch: "x86"
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup MinGW
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        platform: ${{ matrix.arch }}
+        
+    - name: Download Ultimate ASI Loader
+      run: |
+        $asiLoaderUrl = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader_${{ matrix.asi_loader_arch }}.zip"
+        Invoke-WebRequest -Uri $asiLoaderUrl -OutFile "asi_loader.zip"
+        Expand-Archive -Path "asi_loader.zip" -DestinationPath "asi_loader_temp"
+        $dinput8 = Get-ChildItem -Path "asi_loader_temp" -Recurse -Filter "dinput8.dll" | Select-Object -First 1
+        if ($dinput8) {
+          Copy-Item $dinput8.FullName -Destination "dinput8.dll"
+        }
+      shell: pwsh
+        
+    - name: Build Emulator DLL (${{ matrix.arch }})
+      run: |
+        ${{ matrix.mingw }}-g++ -shared -static -o emu.upc_r1_loader${{ matrix.suffix }}.dll src/dllmain.cpp src/pch.cpp src/uplay_data.cpp -lkernel32 -luser32 -ladvapi32
+      shell: bash
+        
+    - name: Build ASI Hook (${{ matrix.arch }})
+      run: |
+        ${{ matrix.mingw }}-g++ -shared -static -I include -I src/minhook/include -o uplay_asi${{ matrix.suffix }}.asi src/uplay_hook.cpp src/minhook/src/hook.c src/minhook/src/buffer.c src/minhook/src/trampoline.c src/minhook/src/hde/hde${{ matrix.suffix == '64' && '64' || '32' }}.c -lkernel32 -luser32
+      shell: bash
+      
+    - name: Create standalone DLL
+      run: |
+        cp emu.upc_r1_loader${{ matrix.suffix }}.dll uplay_r1_loader${{ matrix.suffix }}.dll
+      shell: bash
+      
+    - name: Create ASI zip
+      run: |
+        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
+      shell: pwsh
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-${{ matrix.arch }}
+        path: |
+          uplay_emu_asi_${{ matrix.arch }}.zip
+          uplay_r1_loader${{ matrix.suffix }}.dll
+        retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
+    
+    steps:
+    - name: Download x64 artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-x64
+        path: ./release
+        
+    - name: Download x86 artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: build-x86
+        path: ./release
+        
+    - name: Generate release info
+      id: release_info
+      run: |
+        echo "tag=v$(date +'%Y.%m.%d')-$(echo ${{ github.sha }} | cut -c1-7)" >> $GITHUB_OUTPUT
+        echo "date=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+        
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ steps.release_info.outputs.tag }}
+        name: Uplay R1${{ steps.release_info.outputs.tag }}
+        body: |          
+          **Build Date:** ${{ steps.release_info.outputs.date }}
+          
+          ### Downloads
+          
+          **ASI Version (for games with DLL checks):**
+          | File | Description |
+          |------|-------------|
+          | `uplay_emu_asi_x64.zip` | 64-bit (emu.upc_r1_loader64.dll + uplay_asi64.asi + dinput8.dll) |
+          | `uplay_emu_asi_x86.zip` | 32-bit (emu.upc_r1_loader.dll + uplay_asi.asi + dinput8.dll) |
+          
+          **Standalone (for games without DLL checks):**
+          | File | Description |
+          |------|-------------|
+          | `uplay_r1_loader64.dll` | 64-bit - rename to match your game's Uplay DLL |
+          | `uplay_r1_loader.dll` | 32-bit - rename to match your game's Uplay DLL |
+          
+          ### Usage
+          
+          **ASI:** Extract zip to game folder  
+          **Standalone:** Rename DLL to match game's Uplay DLL name
+        draft: false
+        prerelease: false
+        files: |
+          release/uplay_emu_asi_x64.zip
+          release/uplay_emu_asi_x86.zip
+          release/uplay_r1_loader64.dll
+          release/uplay_r1_loader.dll
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

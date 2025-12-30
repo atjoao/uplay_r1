@@ -1,12 +1,9 @@
 #include "pch.h"
-#include <fstream>
-#include <sstream>
 #include <vector>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <cstdarg>
-
 
 #define UPLAY_EXPORT extern "C" __declspec(dllexport)
 
@@ -19,7 +16,6 @@ static char g_LogPath[MAX_PATH] = {0};
 
 void ReadLoggingConfig()
 {
-	// Read logging settings from INI early
 	CHAR INI[MAX_PATH] = {0};
 	GetModuleFileNameA(UplayModule, INI, MAX_PATH);
 	char* p = strrchr(INI, '\\');
@@ -66,7 +62,7 @@ void InitLog()
 		if (p) strcpy(p + 1, "uplay_emu.log");
 		else strcpy(g_LogPath, "uplay_emu.log");
 		
-		g_LogFile = fopen(g_LogPath, "a");
+		g_LogFile = fopen(g_LogPath, "w+");
 		if (g_LogFile) {
 			time_t now = time(NULL);
 			struct tm* t = localtime(&now);
@@ -118,9 +114,37 @@ static SaveSlot g_SaveSlots[256] = {0};
 static char g_SavePath[MAX_PATH] = {0};
 static bool g_SavePathInit = false;
 
+// Achievement system
+static char g_AchievementPath[MAX_PATH] = {0};
+static bool g_AchievementPathInit = false;
+
+#pragma pack(push, 8)
+struct UPLAY_ACH_Achievement
+{
+    uint32_t id;
+    const char* nameUtf8;
+    const char* descriptionUtf8;
+    bool earned;
+};
+#pragma pack(pop)
+
+struct AchievementListHeader {
+    ULONG_PTR count;
+    UPLAY_ACH_Achievement* achievements;
+};
+
+// Forward declarations for achievement functions
+void InitAchievementPath(const char* userName, DWORD appId);
+void GetAchievementFilePath(DWORD achId, char* outPath);
+bool ReadAchievement(DWORD achId, char* outName, char* outDesc, bool* outEarned);
+bool WriteAchievement(DWORD achId, const char* name, const char* desc, bool earned);
+bool UnlockAchievement(DWORD achId);
+std::vector<DWORD> GetAllAchievementIds();
 // Forward declaration - will be set in UPLAY_Start
 void InitSavePath(const char* userName, DWORD appId);
 void GetSaveFilePath(DWORD slotId, char* outPath);
+void InitAchievementPath(const char* userName, DWORD appId);
+void GetAchievementFilePath(DWORD achId, char* outPath);
 
 HANDLE fileuplay = 0;
 void* DirectoryBuffer = 0;
@@ -176,7 +200,6 @@ namespace Uplay_Configuration
 	char UserEmail[0x200] = { "UplayEmu@rat43.com" };
 	char password[0x200] = { "UplayPassword74" };
 	char GameLanguage[0x200] = { "en-US" };
-	char SaveDir[MAX_PATH] = { "Default" };
 	char UserId[1024] = { "c91c91c9-1c91-c91c-91c9-1c91c91c91c9" };
 	char CdKey[1024] = { "1111-2222-3333-4444" };
 	char TickedId[1024] = { "noT456umPqRt" };
@@ -231,41 +254,6 @@ const char* AttachDirFile(const char* Path, const char* file)
 	sprintf_s(datapp, sizeof(datapp), "%s\\%s", Path, file);
 	return datapp;
 }
-const char* AppIdtoString(int appid)
-{
-	std::stringstream stream;
-	stream << appid;
-	return stream.str().c_str();
-}
-char dataqq[1024] = { 0 };
-char dt[1024] = { 0 };
-char tmppath[1024] = { 0 };
-const char* FormatDir(const char* dir, bool setslashes)
-{
-	if (dataqq[0] == 0)
-	{
-		if (strcmp(Uplay_Configuration::SaveDir, "Default") == 0)
-		{
-			GetModuleFileNameA(UplayModule, tmppath, MAX_PATH);
-			int size = lstrlenA(tmppath);
-			for (int i = size; i > 0; i--)
-			{
-				if (tmppath[i] == '\\')
-				{
-					memset(&tmppath[i], 0, size - i);
-					break;
-				}
-			}
-			sprintf(dataqq, "%s\\%s\\%s\\%u", tmppath, dir, Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
-			return dataqq;
-		}
-		sprintf(dataqq, "%s\\%s\\%s\\%s", Uplay_Configuration::SaveDir, dir, Uplay_Configuration::UserName, AppIdtoString(Uplay_Configuration::gameAppId));
-		return dataqq;
-	}
-	return dataqq;
-
-}
-
 bool IsTargetExist(LPCSTR path)
 {
 	if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
@@ -273,30 +261,130 @@ bool IsTargetExist(LPCSTR path)
 	return true;
 }
 
-UPLAY_EXPORT int UPLAY_ACH_EarnAchievement()
+UPLAY_EXPORT int UPLAY_ACH_EarnAchievement(DWORD achievementId, void* overlapped)
 {
 	LOG_FUNC();
-	return 0;
+	LogWrite("[Uplay Emu] EarnAchievement: id=%lu", achievementId);
+	
+	UnlockAchievement(achievementId);
+	
+	// Set overlapped result
+	if (overlapped) {
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+	}
+	
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_ACH_GetAchievementImage()
 {
 	LOG_FUNC();
 	return 0;
 }
-UPLAY_EXPORT int UPLAY_ACH_GetAchievements()
+
+// Static storage for achievement list to keep strings alive
+static std::vector<char*> g_AchievementStrings;
+static UPLAY_ACH_Achievement* g_AchievementList = nullptr;
+static AchievementListHeader* g_AchievementListHeader = nullptr;
+
+UPLAY_EXPORT int UPLAY_ACH_GetAchievements(DWORD filter, const char* accountIdUtf8, void* outAchievementList, void* overlapped)
 {
 	LOG_FUNC();
-	return 0;
+	LogWrite("[Uplay Emu] GetAchievements: filter=%lu", filter);
+	
+	// Get all achievement IDs
+	std::vector<DWORD> achIds = GetAllAchievementIds();
+	DWORD count = (DWORD)achIds.size();
+	
+	LogWrite("[Uplay Emu] Found %lu achievements", count);
+	
+	// Allocate list header
+	g_AchievementListHeader = (AchievementListHeader*)VirtualAlloc(NULL, sizeof(AchievementListHeader), MEM_COMMIT, PAGE_READWRITE);
+	g_AchievementListHeader->count = count;
+	
+	if (count > 0) {
+		// Allocate achievements array
+		g_AchievementList = (UPLAY_ACH_Achievement*)VirtualAlloc(NULL, sizeof(UPLAY_ACH_Achievement) * count, MEM_COMMIT, PAGE_READWRITE);
+		g_AchievementListHeader->achievements = g_AchievementList;
+		
+		// Clear old strings
+		for (char* str : g_AchievementStrings) {
+			VirtualFree(str, 0, MEM_RELEASE);
+		}
+		g_AchievementStrings.clear();
+		
+		// Fill achievements
+		for (DWORD i = 0; i < count; i++) {
+			DWORD achId = achIds[i];
+			
+			char name[256] = {0};
+			char desc[512] = {0};
+			bool earned = false;
+			
+			ReadAchievement(achId, name, desc, &earned);
+			
+			// Allocate and copy strings
+			char* nameCopy = (char*)VirtualAlloc(NULL, 256, MEM_COMMIT, PAGE_READWRITE);
+			char* descCopy = (char*)VirtualAlloc(NULL, 512, MEM_COMMIT, PAGE_READWRITE);
+			strcpy(nameCopy, name);
+			strcpy(descCopy, desc);
+			g_AchievementStrings.push_back(nameCopy);
+			g_AchievementStrings.push_back(descCopy);
+			
+			g_AchievementList[i].id = achId;
+			g_AchievementList[i].nameUtf8 = nameCopy;
+			g_AchievementList[i].descriptionUtf8 = descCopy;
+			g_AchievementList[i].earned = earned;
+			
+			LogWrite("[Uplay Emu] Achievement %lu: %s (earned=%d)", achId, name, earned);
+		}
+	} else {
+		g_AchievementListHeader->achievements = nullptr;
+	}
+	
+	// Write list pointer to output
+	memcpy(outAchievementList, &g_AchievementListHeader, sizeof(void*));
+	
+	// Set overlapped result
+	if (overlapped) {
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+	}
+	
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementImage()
 {
 	LOG_FUNC();
 	return 0;
 }
-UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementList()
+UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementList(void* list)
 {
 	LOG_FUNC();
-	return 0;
+	
+	// Free strings
+	for (char* str : g_AchievementStrings) {
+		VirtualFree(str, 0, MEM_RELEASE);
+	}
+	g_AchievementStrings.clear();
+	
+	// Free achievement array
+	if (g_AchievementList) {
+		VirtualFree(g_AchievementList, 0, MEM_RELEASE);
+		g_AchievementList = nullptr;
+	}
+	
+	// Free header
+	if (g_AchievementListHeader) {
+		VirtualFree(g_AchievementListHeader, 0, MEM_RELEASE);
+		g_AchievementListHeader = nullptr;
+	}
+	
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_ACH_Write()
 {
@@ -356,6 +444,7 @@ UPLAY_EXPORT int UPLAY_FRIENDS_GetFriendList()
 UPLAY_EXPORT int UPLAY_FRIENDS_Init()
 {
 	LOG_FUNC();
+	LogWrite("[Uplay Emu] UPLAY_FRIENDS_Init returning 0");
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_InviteToGame()
@@ -596,7 +685,7 @@ UPLAY_EXPORT int UPLAY_PARTY_GetInGameMemberList()
 UPLAY_EXPORT int UPLAY_PARTY_Init()
 {
 	LOG_FUNC();
-	return 0;
+	return 1;
 }
 UPLAY_EXPORT int UPLAY_PARTY_InvitePartyToGame()
 {
@@ -673,8 +762,8 @@ void InitSavePath(const char* userName, DWORD appId) {
     char* p = strrchr(basePath, '\\');
     if (p) *p = 0;
     
-    // Build save path: basePath\UplaySaves\userName\appId
-    sprintf(g_SavePath, "%s\\UplaySaves\\%s\\%u", basePath, userName, appId);
+    // Build save path: basePath\UplayEmu\saved\userName
+    sprintf(g_SavePath, "%s\\UplayEmu\\saved\\%s", basePath, userName);
     
     // Create directory structure
     char createPath[MAX_PATH];
@@ -694,6 +783,101 @@ void InitSavePath(const char* userName, DWORD appId) {
 
 void GetSaveFilePath(DWORD slotId, char* outPath) {
     sprintf(outPath, "%s\\%lu.save", g_SavePath, slotId);
+}
+
+// Achievement system functions
+void InitAchievementPath(const char* userName, DWORD appId) {
+    if (g_AchievementPathInit) return;
+    
+    char basePath[MAX_PATH];
+    GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
+    char* p = strrchr(basePath, '\\');
+    if (p) *p = 0;
+    
+    sprintf(g_AchievementPath, "%s\\UplayEmu\\achievements\\%s", basePath, userName);
+    
+    // Create directory structure
+    char createPath[MAX_PATH];
+    strcpy(createPath, g_AchievementPath);
+    for (char* cp = createPath; *cp; cp++) {
+        if (*cp == '\\') {
+            *cp = 0;
+            CreateDirectoryA(createPath, NULL);
+            *cp = '\\';
+        }
+    }
+    CreateDirectoryA(createPath, NULL);
+    
+    g_AchievementPathInit = true;
+    LogWrite("[Uplay Emu] Achievement path initialized: %s", g_AchievementPath);
+}
+
+void GetAchievementFilePath(DWORD achId, char* outPath) {
+    sprintf(outPath, "%s\\%lu.ini", g_AchievementPath, achId);
+}
+
+bool ReadAchievement(DWORD achId, char* outName, char* outDesc, bool* outEarned) {
+    char iniPath[MAX_PATH];
+    GetAchievementFilePath(achId, iniPath);
+    
+    if (GetFileAttributesA(iniPath) == INVALID_FILE_ATTRIBUTES) {
+        return false;
+    }
+    
+    GetPrivateProfileStringA("Achievement", "Name", "Unknown Achievement", outName, 256, iniPath);
+    GetPrivateProfileStringA("Achievement", "Description", "", outDesc, 512, iniPath);
+    *outEarned = GetPrivateProfileIntA("Achievement", "Unlocked", 0, iniPath) != 0;
+    
+    return true;
+}
+
+bool WriteAchievement(DWORD achId, const char* name, const char* desc, bool earned) {
+    char iniPath[MAX_PATH];
+    GetAchievementFilePath(achId, iniPath);
+    
+    WritePrivateProfileStringA("Achievement", "Name", name, iniPath);
+    WritePrivateProfileStringA("Achievement", "Description", desc, iniPath);
+    WritePrivateProfileStringA("Achievement", "Unlocked", earned ? "1" : "0", iniPath);
+    
+    return true;
+}
+
+bool UnlockAchievement(DWORD achId) {
+    char iniPath[MAX_PATH];
+    GetAchievementFilePath(achId, iniPath);
+    
+    // If file doesn't exist, create it with default values
+    if (GetFileAttributesA(iniPath) == INVALID_FILE_ATTRIBUTES) {
+        char defaultName[64];
+        sprintf(defaultName, "Achievement %lu", achId);
+        WritePrivateProfileStringA("Achievement", "Name", defaultName, iniPath);
+        WritePrivateProfileStringA("Achievement", "Description", "", iniPath);
+    }
+    
+    WritePrivateProfileStringA("Achievement", "Unlocked", "1", iniPath);
+    LogWrite("[Uplay Emu] Achievement %lu unlocked", achId);
+    return true;
+}
+
+std::vector<DWORD> GetAllAchievementIds() {
+    std::vector<DWORD> ids;
+    char searchPath[MAX_PATH];
+    sprintf(searchPath, "%s\\*.ini", g_AchievementPath);
+    
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(searchPath, &fd);
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                DWORD achId = strtoul(fd.cFileName, NULL, 10);
+                ids.push_back(achId);
+            }
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    return ids;
 }
 
 UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
@@ -927,7 +1111,6 @@ UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, voi
 	char savePath[MAX_PATH];
 	GetSaveFilePath(slotId, savePath);
 	
-	// Get actual buffer from pointer
 	void* actualBuffer = *(void**)outBufferPtr;
 	DWORD bytesRead = 0;
 	
@@ -935,7 +1118,6 @@ UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, voi
 		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	
 	if (hFile != INVALID_HANDLE_VALUE) {
-		// Seek past header + offset
 		SetFilePointer(hFile, SAVE_HEADER_SIZE + offset, NULL, FILE_BEGIN);
 		ReadFile(hFile, actualBuffer, numBytes, &bytesRead, NULL);
 		CloseHandle(hFile);
@@ -944,7 +1126,6 @@ UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, voi
 	
 	*(DWORD*)outBytesRead = bytesRead;
 	
-	// Set overlapped result
 	FileRead* ovr = (FileRead*)overlapped;
 	ovr->addr1++;
 	ovr->addr2 = 1;
@@ -957,7 +1138,6 @@ UPLAY_EXPORT int UPLAY_SAVE_ReleaseGameList(void* listPointer)
 {
 	LOG_FUNC();
 	if (listPointer) {
-		// Free the list (VirtualFree)
 		VirtualFree(listPointer, 0, MEM_RELEASE);
 	}
 	return 1;
@@ -973,7 +1153,6 @@ UPLAY_EXPORT int UPLAY_SAVE_Remove(DWORD slotId, void* overlapped)
 	
 	DeleteFileA(savePath);
 	
-	// Set overlapped result
 	FileRead* ovr = (FileRead*)overlapped;
 	ovr->addr1++;
 	ovr->addr2 = 1;
@@ -1095,8 +1274,27 @@ UPLAY_EXPORT int UPLAY_Start()
 	}
 	if (!IsTargetExist(INI))
 	{
-		MessageBoxA(0, "Couldn't find Uplay.ini.", "Uplay", MB_ICONERROR);
-		ExitProcess(0);
+		FILE* iniFile = fopen(INI, "w");
+		if (iniFile) {
+			fprintf(iniFile, "[Uplay]\n");
+			fprintf(iniFile, "; Application ownership status (0 = not owned, 1 = owned)\nIsAppOwned=1\n");
+			fprintf(iniFile, "; Connection mode (0 = online, 1 = offline)\nUplayConnection=0\n");
+			fprintf(iniFile, ";Application ID (change this to match your game's App ID)\nAppId=0\n");
+			fprintf(iniFile, "; User credential\nUsername=Rat\n");
+			fprintf(iniFile, "Email=UplayEmu@rat43.com\n");
+			fprintf(iniFile, "Password=UplayPassword74\n");
+			fprintf(iniFile, "; Game language (ISO language code)\nLanguage=en-US\n");
+			fprintf(iniFile, "; CD Key for the game\nCdKey=1111-2222-3333-4444\n");
+			fprintf(iniFile, "; User ID (UUID format)\nUserId=c91c91c9-1c91-c91c-91c9-1c91c91c91c9\n");
+			fprintf(iniFile, "; Ticket ID for authentication\nTickedId=noT456umPqRt\n");
+			fprintf(iniFile, "\n; Enable logging to uplay_emu.log or Console (0 = disabled, 1 = enabled)\nLogging=0\n");
+			fprintf(iniFile, "EnableConsole=0\n");
+
+			fclose(iniFile);
+		} else {
+			MessageBoxA(0, "Couldn't create Uplay.ini.", "Uplay", MB_ICONERROR);
+			ExitProcess(0);
+		}
 	}
 	Uplay_Configuration::appowned = GetPrivateProfileIntA("Uplay", "IsAppOwned", 0, INI) == TRUE;		// Read ini informations
 	Uplay_Configuration::Offline = GetPrivateProfileIntA("Uplay", "UplayConnection", 0, INI) == TRUE;
@@ -1106,14 +1304,13 @@ UPLAY_EXPORT int UPLAY_Start()
 	GetPrivateProfileStringA("Uplay", "Username", 0, Uplay_Configuration::UserName, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "Email", 0, Uplay_Configuration::UserEmail, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "Password", 0, Uplay_Configuration::password, 0x200, INI);
-	GetPrivateProfileStringA("Uplay", "SavePath", 0, Uplay_Configuration::SaveDir, MAX_PATH, INI);
 	GetPrivateProfileStringA("Uplay", "Language", 0, Uplay_Configuration::GameLanguage, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "CdKey", 0, Uplay_Configuration::CdKey, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "UserId", 0, Uplay_Configuration::UserId, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
 
-	// Initialize save system
 	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
+	InitAchievementPath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
 	
 	return 0;
 }
@@ -1240,6 +1437,7 @@ UPLAY_EXPORT int UPLAY_USER_IsConnected()
 UPLAY_EXPORT int UPLAY_USER_IsInOfflineMode()
 {
 	LOG_FUNC();
+	LogWrite("[Uplay Emu] UPLAY_USER_IsInOfflineMode returning %d", Uplay_Configuration::Offline);
 	return Uplay_Configuration::Offline;
 }
 UPLAY_EXPORT int UPLAY_USER_IsOwned(int data)
