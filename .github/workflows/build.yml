@@ -18,7 +18,7 @@ jobs:
             msystem: MINGW64
             make_arch: "64"
             suffix: "64"
-            asi_loader_arch: "x64"
+            asi_loader_arch: "_x64"
           - arch: x86
             msystem: MINGW32
             make_arch: "32"
@@ -42,7 +42,7 @@ jobs:
         
     - name: Download Ultimate ASI Loader
       run: |
-        $asiLoaderUrl = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader_${{ matrix.asi_loader_arch }}.zip"
+        $asiLoaderUrl = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader${{ matrix.asi_loader_arch }}.zip"
         Invoke-WebRequest -Uri $asiLoaderUrl -OutFile "asi_loader.zip"
         Expand-Archive -Path "asi_loader.zip" -DestinationPath "asi_loader_temp"
         $dinput8 = Get-ChildItem -Path "asi_loader_temp" -Recurse -Filter "dinput8.dll" | Select-Object -First 1
