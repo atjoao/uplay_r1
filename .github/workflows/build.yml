@@ -50,10 +50,16 @@ jobs:
           Copy-Item $dinput8.FullName -Destination "dinput8.dll"
         }
       shell: pwsh
+
+    - name: Download licenses
+      run: |
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/refs/heads/master/license" -OutFile "LICENSE-ASI-Loader.txt"
+        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/TsudaKageyu/minhook/master/LICENSE.txt" -OutFile "LICENSE-MinHook.txt"
+      shell: pwsh
       
     - name: Create ASI zip
       run: |
-        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
+        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll", "LICENSE-ASI-Loader.txt", "LICENSE-MinHook.txt" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
       shell: pwsh
         
     - name: Upload artifacts
