@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <ctime>
 #include <cstdarg>
+#include <shlobj.h>
 
 #define UPLAY_EXPORT extern "C" __declspec(dllexport)
 
@@ -756,14 +757,19 @@ UPLAY_EXPORT int UPLAY_Release()
 void InitSavePath(const char* userName, DWORD appId) {
     if (g_SavePathInit) return;
     
-    // Get module directory
-    char basePath[MAX_PATH];
-    GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
-    char* p = strrchr(basePath, '\\');
-    if (p) *p = 0;
-    
-    // Build save path: basePath\UplayEmu\saved\userName
-    sprintf(g_SavePath, "%s\\UplayEmu\\saved\\%s", basePath, userName);
+    // Get AppData folder
+    char appDataPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+        // Build save path: %APPDATA%\UplayEmu\{userId}\{appId}\saves
+        sprintf(g_SavePath, "%s\\UplayEmu\\%s\\%lu\\saves", appDataPath, userName, appId);
+    } else {
+        // Fallback to game directory
+        char basePath[MAX_PATH];
+        GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
+        char* p = strrchr(basePath, '\\');
+        if (p) *p = 0;
+        sprintf(g_SavePath, "%s\\UplayEmu\\%s\\%lu\\saves", basePath, userName, appId);
+    }
     
     // Create directory structure
     char createPath[MAX_PATH];
@@ -789,12 +795,19 @@ void GetSaveFilePath(DWORD slotId, char* outPath) {
 void InitAchievementPath(const char* userName, DWORD appId) {
     if (g_AchievementPathInit) return;
     
-    char basePath[MAX_PATH];
-    GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
-    char* p = strrchr(basePath, '\\');
-    if (p) *p = 0;
-    
-    sprintf(g_AchievementPath, "%s\\UplayEmu\\achievements\\%s", basePath, userName);
+    // Get AppData folder
+    char appDataPath[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appDataPath))) {
+        // Build achievement path: %APPDATA%\UplayEmu\{userId}\{appId}\achievements
+        sprintf(g_AchievementPath, "%s\\UplayEmu\\%s\\%lu\\achievements", appDataPath, userName, appId);
+    } else {
+        // Fallback to game directory
+        char basePath[MAX_PATH];
+        GetModuleFileNameA(UplayModule, basePath, MAX_PATH);
+        char* p = strrchr(basePath, '\\');
+        if (p) *p = 0;
+        sprintf(g_AchievementPath, "%s\\UplayEmu\\%s\\%lu\\achievements", basePath, userName, appId);
+    }
     
     // Create directory structure
     char createPath[MAX_PATH];
@@ -1258,7 +1271,7 @@ UPLAY_EXPORT int UPLAY_SetLanguage(const char* language)
 	strcpy(Uplay_Configuration::GameLanguage, language);
 	return 1;
 }
-UPLAY_EXPORT int UPLAY_Start()
+UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 {
 	LOG_FUNC();
 	CHAR INI[MAX_PATH] = { 0 };					// Get ini directory
@@ -1279,7 +1292,7 @@ UPLAY_EXPORT int UPLAY_Start()
 			fprintf(iniFile, "[Uplay]\n");
 			fprintf(iniFile, "; Application ownership status (0 = not owned, 1 = owned)\nIsAppOwned=1\n");
 			fprintf(iniFile, "; Connection mode (0 = online, 1 = offline)\nUplayConnection=0\n");
-			fprintf(iniFile, ";Application ID (change this to match your game's App ID)\nAppId=0\n");
+			fprintf(iniFile, ";Application ID (change this to match your game's App ID)\nAppId=%d\n", uplayId);
 			fprintf(iniFile, "; User credential\nUsername=Rat\n");
 			fprintf(iniFile, "Email=UplayEmu@rat43.com\n");
 			fprintf(iniFile, "Password=UplayPassword74\n");
@@ -1317,13 +1330,27 @@ UPLAY_EXPORT int UPLAY_Start()
 UPLAY_EXPORT int UPLAY_StartCN()
 {
 	LOG_FUNC();
-	return UPLAY_Start();
+	return UPLAY_Start(0);
 }
-UPLAY_EXPORT int UPLAY_Startup()
+UPLAY_EXPORT int UPLAY_Startup(unsigned int uplayId, unsigned int gameVersion, const char* languageCountryCode)
 {
 	LOG_FUNC();
-	return UPLAY_Start();
+	LogWrite("[Uplay Emu] UPLAY_Startup(uplayId=%u, gameVersion=%u, language=%s)", 
+		uplayId, gameVersion, languageCountryCode ? languageCountryCode : "null");
+	
+	// Use uplayId as appId if not set in INI
+	if (Uplay_Configuration::gameAppId == 0) {
+		Uplay_Configuration::gameAppId = uplayId;
+	}
+	
+	// Use language if provided
+	if (languageCountryCode && *languageCountryCode) {
+		strcpy(Uplay_Configuration::GameLanguage, languageCountryCode);
+	}
+	
+	return UPLAY_Start(uplayId);
 }
+
 UPLAY_EXPORT int UPLAY_USER_ClearGameSession()
 {
 	LOG_FUNC();
