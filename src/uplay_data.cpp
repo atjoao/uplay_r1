@@ -14,6 +14,7 @@ static bool g_LogInitialized = false;
 static bool g_LoggingEnabled = false;
 static bool g_ConsoleEnabled = false;
 static char g_LogPath[MAX_PATH] = {0};
+static bool g_SteamSyncEnabled = false;
 
 void ReadLoggingConfig()
 {
@@ -26,6 +27,7 @@ void ReadLoggingConfig()
 	if (GetFileAttributesA(INI) != INVALID_FILE_ATTRIBUTES) {
 		g_LoggingEnabled = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
 		g_ConsoleEnabled = GetPrivateProfileIntA("Uplay", "EnableConsole", 0, INI) == TRUE;
+		g_SteamSyncEnabled = GetPrivateProfileIntA("Uplay", "SteamSync", 0, INI) == TRUE;
 	}
 }
 
@@ -118,6 +120,39 @@ static bool g_SavePathInit = false;
 // Achievement system
 static char g_AchievementPath[MAX_PATH] = {0};
 static bool g_AchievementPathInit = false;
+
+// Steam API integration
+// Note: g_SteamSyncEnabled is declared near top with other logging flags
+static bool g_SteamApiInitialized = false;
+static HMODULE g_SteamApiModule = nullptr;
+static void* g_SteamUserStats = nullptr;
+static char g_AchievementMappingPath[MAX_PATH] = {0};
+bool g_StatsRequested = false;
+bool g_StatsReady = false;
+int g_AchievementsCount = 0;
+
+// Steam Flat API function pointers (all __cdecl, first arg is interface ptr)
+typedef void* (__cdecl *FnSteamUserStats)();
+typedef void  (__cdecl *FnRunCallbacks)();
+typedef bool  (__cdecl *FnRequestCurrentStats)(void*);
+typedef bool  (__cdecl *FnSetAchievement)(void*, const char*);
+typedef bool  (__cdecl *FnStoreStats)(void*);
+typedef bool  (__cdecl *FnGetAchievement)(void*, const char*, bool*);
+typedef uint32_t (__cdecl *FnGetNumAchievements)(void*);
+typedef const char* (__cdecl *FnGetAchievementName)(void*, uint32_t);
+
+static FnRunCallbacks       g_RunCallbacks = nullptr;
+static FnRequestCurrentStats g_RequestCurrentStats = nullptr;
+static FnSetAchievement     g_SetAchievement = nullptr;
+static FnStoreStats         g_StoreStats = nullptr;
+static FnGetNumAchievements g_GetNumAchievements = nullptr;
+static FnGetAchievementName g_GetAchievementName = nullptr;
+static FnGetAchievement g_GetAchievement = nullptr;
+
+// Forward declarations for Steam API functions
+void InitSteamApi();
+void InitAchievementMappingPath();
+void UnlockSteamAchievement(DWORD achId);
 
 #pragma pack(push, 8)
 struct UPLAY_ACH_Achievement
@@ -268,6 +303,7 @@ UPLAY_EXPORT int UPLAY_ACH_EarnAchievement(DWORD achievementId, void* overlapped
 	LogWrite("[Uplay Emu] EarnAchievement: id=%lu", achievementId);
 	
 	UnlockAchievement(achievementId);
+	UnlockSteamAchievement(achievementId);
 	
 	// Set overlapped result
 	if (overlapped) {
@@ -445,7 +481,6 @@ UPLAY_EXPORT int UPLAY_FRIENDS_GetFriendList()
 UPLAY_EXPORT int UPLAY_FRIENDS_Init()
 {
 	LOG_FUNC();
-	LogWrite("[Uplay Emu] UPLAY_FRIENDS_Init returning 0");
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_InviteToGame()
@@ -893,6 +928,199 @@ std::vector<DWORD> GetAllAchievementIds() {
     return ids;
 }
 
+// Steam API implementation
+void InitSteamApi() {
+    if (g_SteamApiInitialized) return;
+    g_SteamApiInitialized = true;
+    
+    #ifdef _WIN64
+        const char* steamApiName = "steam_api64.dll";
+    #else
+        const char* steamApiName = "steam_api.dll";
+    #endif
+    
+    // Step 1: Check if steam_api is already loaded
+    g_SteamApiModule = GetModuleHandleA(steamApiName);
+    if (g_SteamApiModule) {
+        LogWrite("[Uplay Emu] steam_api already loaded at 0x%p", g_SteamApiModule);
+    }
+    
+    // Step 2: Try to load from game directory
+    if (!g_SteamApiModule) {
+        char gamePath[MAX_PATH] = {0};
+        GetModuleFileNameA(NULL, gamePath, MAX_PATH);  // Get game exe path
+        char* p = strrchr(gamePath, '\\');
+        if (p) {
+            strcpy(p + 1, steamApiName);
+            if (GetFileAttributesA(gamePath) != INVALID_FILE_ATTRIBUTES) {
+                g_SteamApiModule = LoadLibraryA(gamePath);
+                if (g_SteamApiModule) {
+                    LogWrite("[Uplay Emu] Loaded steam_api from game dir: %s", gamePath);
+                }
+            }
+        }
+    }
+
+    // Step 4: Disable if all attempts failed
+    if (!g_SteamApiModule) {
+        LogWrite("[Uplay Emu] Could not find or load steam_api, Steam sync disabled");
+        g_SteamSyncEnabled = false;
+        return;
+    }
+    
+    // SteamAPI_InitFlat returns 0 (k_ESteamAPIInitResult_OK) on success
+    typedef int (__cdecl *SteamAPI_InitFlat_t)(char*);
+	SteamAPI_InitFlat_t SteamAPI_InitFlat = nullptr;
+    
+	SteamAPI_InitFlat = (SteamAPI_InitFlat_t)GetProcAddress(g_SteamApiModule, "SteamAPI_InitFlat");
+	if (SteamAPI_InitFlat) {
+		LogWrite("[Uplay Emu] Found init function: %s", "SteamAPI_InitFlat");
+	} else {
+		LogWrite("[Uplay Emu] No init function found - Steam sync disabled");
+		g_SteamSyncEnabled = false;
+        return;
+	}
+	
+    char errMsg[1024] = {0};
+    int res = SteamAPI_InitFlat(errMsg);
+    if (res == 0) {
+        LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
+    } else {
+        LogWrite("[Uplay Emu] SteamAPI_InitFlat() failed with error %d: %s", res, errMsg);
+        g_SteamSyncEnabled = false;
+        return;
+    }
+
+    // Get SteamUserStats interface
+    FnSteamUserStats fnGetUserStats = nullptr;
+    fnGetUserStats = (FnSteamUserStats)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUserStats_v012");
+    if (!fnGetUserStats) {
+        fnGetUserStats = (FnSteamUserStats)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUserStats_v011");
+    }
+    if (!fnGetUserStats) {
+        LogWrite("[Uplay Emu] No SteamUserStats accessor found - Steam sync disabled");
+        g_SteamSyncEnabled = false;
+        return;
+    }
+    
+    g_SteamUserStats = fnGetUserStats();
+    if (!g_SteamUserStats) {
+        LogWrite("[Uplay Emu] SteamUserStats() returned NULL - Steam not ready");
+        g_SteamSyncEnabled = false;
+        return;
+    }
+    LogWrite("[Uplay Emu] Got SteamUserStats interface: 0x%p", g_SteamUserStats);
+
+    // Get all required function pointers
+    g_RunCallbacks = (FnRunCallbacks)GetProcAddress(g_SteamApiModule, "SteamAPI_RunCallbacks");
+    g_RequestCurrentStats = (FnRequestCurrentStats)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_RequestCurrentStats");
+    g_SetAchievement = (FnSetAchievement)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_SetAchievement");
+    g_StoreStats = (FnStoreStats)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_StoreStats");
+    g_GetNumAchievements = (FnGetNumAchievements)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetNumAchievements");
+    g_GetAchievementName = (FnGetAchievementName)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetAchievementName");
+    g_GetAchievement = (FnGetAchievement)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetAchievement");
+
+    // Validate required functions
+    if (!g_SetAchievement) {
+        LogWrite("[Uplay Emu] SetAchievement not found - Steam sync disabled");
+        g_SteamSyncEnabled = false;
+        return;
+    }
+
+    LogWrite("[Uplay Emu] Steam API initialized successfully");
+    LogWrite("[Uplay Emu]   RunCallbacks: 0x%p", g_RunCallbacks);
+    LogWrite("[Uplay Emu]   RequestCurrentStats: 0x%p", g_RequestCurrentStats);
+    LogWrite("[Uplay Emu]   SetAchievement: 0x%p", g_SetAchievement);
+    LogWrite("[Uplay Emu]   StoreStats: 0x%p", g_StoreStats);
+    LogWrite("[Uplay Emu]   GetNumAchievements: 0x%p", g_GetNumAchievements);
+
+    // Request stats (async - will be ready after callbacks processed)
+    if (g_RequestCurrentStats) {
+        g_RequestCurrentStats(g_SteamUserStats);
+        g_StatsRequested = true;
+        LogWrite("[Uplay Emu] RequestCurrentStats() called");
+    }
+    
+    // Try to get and log AppID
+    typedef void* (__cdecl *FnSteamUtils)();
+    typedef uint32_t (__cdecl *FnGetAppID)(void*);
+    FnSteamUtils fnUtils = (FnSteamUtils)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUtils_v010");
+    if (!fnUtils) fnUtils = (FnSteamUtils)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUtils_v009");
+    if (fnUtils) {
+        void* utils = fnUtils();
+        if (utils) {
+            FnGetAppID fnGetAppID = (FnGetAppID)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUtils_GetAppID");
+            if (fnGetAppID) {
+                uint32_t appId = fnGetAppID(utils);
+                LogWrite("[Uplay Emu] Steam AppID: %u", appId);
+            }
+        }
+    }
+}
+
+// Initialize achievements.ini path (called once)
+void InitAchievementMappingPath() {
+    if (g_AchievementMappingPath[0] != 0) return;
+    
+    GetModuleFileNameA(UplayModule, g_AchievementMappingPath, MAX_PATH);
+    char* p = strrchr(g_AchievementMappingPath, '\\');
+    if (p) strcpy(p + 1, "achievements.ini");
+    else strcpy(g_AchievementMappingPath, "achievements.ini");
+    
+    LogWrite("[Uplay Emu] Achievement mapping path: %s", g_AchievementMappingPath);
+}
+
+void UnlockSteamAchievement(DWORD achId) {
+    if (!g_SteamSyncEnabled) return;
+    if (!g_SteamUserStats || !g_SetAchievement) return;
+	if (!g_StatsReady) {
+		LogWrite("[Uplay Emu] Steam stats not ready yet, skipping unlock");
+		return;
+	}
+    
+    InitAchievementMappingPath();
+    
+    // Lookup Steam name from user-created achievements.ini
+    // Format: [Mapping] section with UplayId=SteamAchievementName
+    char key[16], steamName[256] = {0};
+    sprintf(key, "%lu", achId);
+    GetPrivateProfileStringA("Mapping", key, "", steamName, sizeof(steamName), g_AchievementMappingPath);
+    
+    if (steamName[0] == 0) {
+        LogWrite("[Uplay Emu] No Steam mapping for Uplay achievement %lu", achId);
+        LogWrite("[Uplay Emu] Add to achievements.ini: [Mapping] %lu=STEAM_ACH_NAME", achId);
+        return;
+    }
+    
+    LogWrite("[Uplay Emu] Attempting SetAchievement('%s')", steamName);
+    LogWrite("[Uplay Emu]   g_SteamUserStats=0x%p, g_SetAchievement=0x%p", g_SteamUserStats, g_SetAchievement);
+    LogWrite("[Uplay Emu]   g_StatsReady=%d, g_AchievementsCount=%d", g_StatsReady, g_AchievementsCount);
+    
+    // Check current state first
+    if (g_GetAchievement) {
+        bool alreadyUnlocked = false;
+        bool gotState = g_GetAchievement(g_SteamUserStats, steamName, &alreadyUnlocked);
+        LogWrite("[Uplay Emu]   GetAchievement returned: %d, unlocked=%d", gotState, alreadyUnlocked);
+        if (alreadyUnlocked) {
+            LogWrite("[Uplay Emu] Achievement '%s' is already unlocked!", steamName);
+            return;
+        }
+    }
+    
+    bool result = g_SetAchievement(g_SteamUserStats, steamName);
+    LogWrite("[Uplay Emu]   SetAchievement returned: %d", result);
+    
+    if (result) {
+        LogWrite("[Uplay Emu] Steam achievement '%s' unlocked!", steamName);
+        if (g_StoreStats) {
+            bool stored = g_StoreStats(g_SteamUserStats);
+            LogWrite("[Uplay Emu] StoreStats returned: %d", stored);
+        }
+    } else {
+        LogWrite("[Uplay Emu] FAILED to unlock Steam achievement '%s'", steamName);
+    }
+}
+
 UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 {
 	LOG_FUNC();
@@ -1302,6 +1530,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "; Ticket ID for authentication\nTickedId=noT456umPqRt\n");
 			fprintf(iniFile, "\n; Enable logging to uplay_emu.log or Console (0 = disabled, 1 = enabled)\nLogging=0\n");
 			fprintf(iniFile, "EnableConsole=0\n");
+			fprintf(iniFile, "\n; Enable Steam sync (0 = disabled, 1 = enabled)\nSteamSync=0\n");
 
 			fclose(iniFile);
 		} else {
@@ -1309,9 +1538,11 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			ExitProcess(0);
 		}
 	}
+
 	Uplay_Configuration::appowned = GetPrivateProfileIntA("Uplay", "IsAppOwned", 0, INI) == TRUE;		// Read ini informations
 	Uplay_Configuration::Offline = GetPrivateProfileIntA("Uplay", "UplayConnection", 0, INI) == TRUE;
 	Uplay_Configuration::logging = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
+	g_SteamSyncEnabled = GetPrivateProfileIntA("Uplay", "SteamSync", 0, INI) == TRUE;
 	g_LoggingEnabled = Uplay_Configuration::logging;
 	Uplay_Configuration::gameAppId = GetPrivateProfileIntA("Uplay", "AppId", 0, INI);
 	GetPrivateProfileStringA("Uplay", "Username", 0, Uplay_Configuration::UserName, 0x200, INI);
@@ -1324,6 +1555,12 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 
 	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
 	InitAchievementPath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
+
+	if (g_SteamSyncEnabled) {
+		if (!g_SteamApiInitialized) {
+			InitSteamApi();
+		}
+	}
 	
 	return 0;
 }
@@ -1492,11 +1729,41 @@ UPLAY_EXPORT int UPLAY_USER_SetGameSession()
 	LOG_FUNC();
 	return 0;
 }
+
 UPLAY_EXPORT int UPLAY_Update()
 {
-	LOG_FUNC();
-	return 1;
+    LOG_FUNC();
+
+    if (!g_SteamSyncEnabled || !g_SteamApiModule || !g_SteamUserStats)
+        return 1;
+
+    if (g_RunCallbacks)
+        g_RunCallbacks();
+
+    if (!g_StatsReady && g_StatsRequested) {
+		if (g_GetNumAchievements) {
+			g_AchievementsCount = g_GetNumAchievements(g_SteamUserStats);
+		}
+
+		if (g_AchievementsCount > 0) {
+			g_StatsReady = true;
+			LogWrite("[Uplay Emu] Steam stats ready! Found %d achievements:", g_AchievementsCount);
+            
+            if (g_GetAchievementName) {
+                for (int i = 0; i < g_AchievementsCount && i < 100; i++) {
+                    const char* name = g_GetAchievementName(g_SteamUserStats, i);
+                    if (name) {
+                        LogWrite("[Uplay Emu]   %d = %s", i, name);
+                    }
+                }
+                LogWrite("[Uplay Emu] Add these to achievements.ini [Mapping] section!");
+            }
+		}
+	}
+
+    return 1;
 }
+
 UPLAY_EXPORT int UPLAY_WIN_GetActions()
 {
 	LOG_FUNC();
