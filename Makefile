@@ -13,7 +13,7 @@ endif
 # Compiler settings
 CXX = g++
 CXXFLAGS = -shared -static
-INCLUDES = -I include -I src/minhook/include
+INCLUDES = -I src -I src/minhook/include
 
 # Output files
 EMU_DLL = emu.upc_r1_loader$(SUFFIX).dll

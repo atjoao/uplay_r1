@@ -10,7 +10,7 @@
 #include <tlhelp32.h>
 #include <cstdio>
 #include <cstring>
-#include "../include/MinHook.h"
+#include "minhook/include/MinHook.h"
 
 // ============================================================================
 // Configuration
