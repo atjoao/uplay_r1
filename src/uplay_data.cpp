@@ -1194,9 +1194,15 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	char savePath[MAX_PATH];
 	GetSaveFilePath(slotId, savePath);
 	
+	// Log buffer pointer for diagnostic purposes
+	LogWrite("[Uplay Emu] Buffer pointer: %p", bufferPtr);
+	
 	// Get actual buffer from pointer
 	void* actualBuffer = *(void**)bufferPtr;
+	LogWrite("[Uplay Emu] Dereferenced buffer: %p", actualBuffer);
+	
 	if (!actualBuffer) {
+		LogWrite("[Uplay Emu] Error: Null buffer after dereferencing");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
@@ -1207,20 +1213,72 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
 		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	
-	if (hFile != INVALID_HANDLE_VALUE) {
-		// Seek past header
-		SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
-		
-		DWORD written;
-		WriteFile(hFile, actualBuffer, numBytes, &written, NULL);
-		
-		// Truncate file to exact size
-		SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
-		SetEndOfFile(hFile);
-		
-		CloseHandle(hFile);
-		LogWrite("[Uplay Emu] Wrote %lu bytes", written);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		DWORD error = GetLastError();
+		LogWrite("[Uplay Emu] Error: Failed to open file '%s', error code: %lu", savePath, error);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
 	}
+	
+	// Seek past header
+	DWORD seekResult = SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
+	if (seekResult == INVALID_SET_FILE_POINTER) {
+		DWORD error = GetLastError();
+		LogWrite("[Uplay Emu] Error: Failed to seek to position %d, error code: %lu", SAVE_HEADER_SIZE, error);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	DWORD written;
+	if (!WriteFile(hFile, actualBuffer, numBytes, &written, NULL)) {
+		DWORD error = GetLastError();
+		LogWrite("[Uplay Emu] Error: WriteFile failed, error code: %lu", error);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Verify write completion
+	if (written != numBytes) {
+		LogWrite("[Uplay Emu] Warning: Partial write - requested %lu bytes, wrote %lu bytes", numBytes, written);
+	}
+	
+	// Truncate file to exact size
+	seekResult = SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
+	if (seekResult == INVALID_SET_FILE_POINTER) {
+		DWORD error = GetLastError();
+		LogWrite("[Uplay Emu] Error: Failed to seek for truncation, error code: %lu", error);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	if (!SetEndOfFile(hFile)) {
+		DWORD error = GetLastError();
+		LogWrite("[Uplay Emu] Error: SetEndOfFile failed, error code: %lu", error);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	CloseHandle(hFile);
+	LogWrite("[Uplay Emu] Success: Wrote %lu bytes to '%s'", written, savePath);
 	
 	// Set overlapped result
 	FileRead* ovr = (FileRead*)overlapped;
