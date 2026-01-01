@@ -940,7 +940,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 			header[40 + i*2 + 1] = 0;
 		}
 		
-		if (SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+		if (SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
 			LogWrite("[Uplay Emu] SAVE_Close: SetFilePointer failed (Error: %lu)", GetLastError());
 			CloseHandle(hFile);
 			memset(slot, 0, sizeof(SaveSlot));
@@ -1293,7 +1293,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	}
 	
 	// Seek past header
-	if (SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+	if (SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
 		LogWrite("[Uplay Emu] SAVE_Write: SetFilePointer failed (Error: %lu)", GetLastError());
 		CloseHandle(hFile);
 		FileRead* ovr = (FileRead*)overlapped;
@@ -1326,7 +1326,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	}
 	
 	// Truncate file to exact size
-	if (SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+	if (SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
 		LogWrite("[Uplay Emu] SAVE_Write: SetFilePointer for truncate failed (Error: %lu)", GetLastError());
 		CloseHandle(hFile);
 		FileRead* ovr = (FileRead*)overlapped;
