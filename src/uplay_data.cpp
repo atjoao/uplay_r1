@@ -1227,7 +1227,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	DWORD seekResult = SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
 	if (seekResult == INVALID_SET_FILE_POINTER) {
 		DWORD error = GetLastError();
-		LogWrite("[Uplay Emu] Error: Failed to seek to position %d, error code: %lu", SAVE_HEADER_SIZE, error);
+		LogWrite("[Uplay Emu] Error: Failed to seek to position %lu, error code: %lu", (DWORD)SAVE_HEADER_SIZE, error);
 		CloseHandle(hFile);
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
@@ -1250,7 +1250,13 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	
 	// Verify write completion
 	if (written != numBytes) {
-		LogWrite("[Uplay Emu] Warning: Partial write - requested %lu bytes, wrote %lu bytes", numBytes, written);
+		LogWrite("[Uplay Emu] Error: Partial write - requested %lu bytes, wrote %lu bytes", numBytes, written);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
 	}
 	
 	// Truncate file to exact size
