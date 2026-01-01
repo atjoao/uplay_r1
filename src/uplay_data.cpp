@@ -911,29 +911,55 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 		char savePath[MAX_PATH];
 		GetSaveFilePath(slotId, savePath);
 		
-		HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, 
-			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (hFile != INVALID_HANDLE_VALUE) {
-			// Create 552-byte header
-			BYTE header[SAVE_HEADER_SIZE] = {0};
-			
-			// Write header size - 4 at offset 0
-			DWORD headerSizeValue = SAVE_HEADER_SIZE - 4;
-			memcpy(header, &headerSizeValue, 4);
-			
-			// Write save name as Unicode at offset 40
-			int nameLen = strlen(slot->saveName);
-			for (int i = 0; i < nameLen && (40 + i*2 + 1) < SAVE_HEADER_SIZE; i++) {
-				header[40 + i*2] = (BYTE)slot->saveName[i];
-				header[40 + i*2 + 1] = 0;
-			}
-			
-			SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
-			DWORD written;
-			WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
-			CloseHandle(hFile);
-			LogWrite("[Uplay Emu] Header written for slot %lu", slotId);
+		// Verify file exists
+		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+			LogWrite("[Uplay Emu] SAVE_Close: Save file doesn't exist: %s", savePath);
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
 		}
+		
+		HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, 
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (hFile == INVALID_HANDLE_VALUE) {
+			LogWrite("[Uplay Emu] SAVE_Close: Failed to open file (Error: %lu)", GetLastError());
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
+		}
+		
+		// Create 552-byte header
+		BYTE header[SAVE_HEADER_SIZE] = {0};
+		
+		// Write header size - 4 at offset 0
+		DWORD headerSizeValue = SAVE_HEADER_SIZE - 4;
+		memcpy(header, &headerSizeValue, 4);
+		
+		// Write save name as Unicode at offset 40
+		int nameLen = strlen(slot->saveName);
+		for (int i = 0; i < nameLen && (40 + i*2 + 1) < SAVE_HEADER_SIZE; i++) {
+			header[40 + i*2] = (BYTE)slot->saveName[i];
+			header[40 + i*2 + 1] = 0;
+		}
+		
+		if (SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+			LogWrite("[Uplay Emu] SAVE_Close: SetFilePointer failed (Error: %lu)", GetLastError());
+			CloseHandle(hFile);
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
+		}
+		
+		DWORD written;
+		if (!WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL) || written != SAVE_HEADER_SIZE) {
+			LogWrite("[Uplay Emu] SAVE_Close: Failed to write header (Error: %lu, Written: %lu)", GetLastError(), written);
+			CloseHandle(hFile);
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
+		}
+		
+		// Flush to disk
+		FlushFileBuffers(hFile);
+		
+		CloseHandle(hFile);
+		LogWrite("[Uplay Emu] Header written for slot %lu", slotId);
 	}
 	
 	// Close file handle if exists
@@ -1093,12 +1119,29 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
 			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
 				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-			if (hFile != INVALID_HANDLE_VALUE) {
-				BYTE header[SAVE_HEADER_SIZE] = {0};
-				DWORD written;
-				WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
-				CloseHandle(hFile);
+			if (hFile == INVALID_HANDLE_VALUE) {
+				LogWrite("[Uplay Emu] Failed to create save file (Error: %lu)", GetLastError());
+				slot->inUse = false;
+				FileRead* ovr = (FileRead*)overlapped;
+				ovr->addr1++;
+				ovr->addr2 = 1;
+				ovr->addr3 = 0;
+				return 0;
 			}
+			BYTE header[SAVE_HEADER_SIZE] = {0};
+			DWORD written;
+			if (!WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL) || written != SAVE_HEADER_SIZE) {
+				LogWrite("[Uplay Emu] Failed to write header (Error: %lu, Written: %lu)", GetLastError(), written);
+				CloseHandle(hFile);
+				DeleteFileA(savePath); // Clean up incomplete file
+				slot->inUse = false;
+				FileRead* ovr = (FileRead*)overlapped;
+				ovr->addr1++;
+				ovr->addr2 = 1;
+				ovr->addr3 = 0;
+				return 0;
+			}
+			CloseHandle(hFile);
 		}
 		slot->fileHandle = NULL;
 	}
@@ -1191,12 +1234,9 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_Write: slotId=%lu, bytes=%lu", slotId, numBytes);
 	
-	char savePath[MAX_PATH];
-	GetSaveFilePath(slotId, savePath);
-	
-	// Get actual buffer from pointer
-	void* actualBuffer = *(void**)bufferPtr;
-	if (!actualBuffer) {
+	// Validate slot
+	if (slotId >= 256 || !g_SaveSlots[slotId].inUse) {
+		LogWrite("[Uplay Emu] SAVE_Write: Invalid or unused slot");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
@@ -1204,23 +1244,113 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 		return 0;
 	}
 	
-	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+	SaveSlot* slot = &g_SaveSlots[slotId];
+	
+	// Verify write mode
+	if (slot->mode != 1) {
+		LogWrite("[Uplay Emu] SAVE_Write: Slot not opened in write mode");
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	// Get actual buffer from pointer
+	void* actualBuffer = *(void**)bufferPtr;
+	if (!actualBuffer) {
+		LogWrite("[Uplay Emu] SAVE_Write: Invalid buffer pointer");
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Verify file exists
+	if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+		LogWrite("[Uplay Emu] SAVE_Write: Save file doesn't exist: %s", savePath);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
 		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	
-	if (hFile != INVALID_HANDLE_VALUE) {
-		// Seek past header
-		SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
-		
-		DWORD written;
-		WriteFile(hFile, actualBuffer, numBytes, &written, NULL);
-		
-		// Truncate file to exact size
-		SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
-		SetEndOfFile(hFile);
-		
-		CloseHandle(hFile);
-		LogWrite("[Uplay Emu] Wrote %lu bytes", written);
+	if (hFile == INVALID_HANDLE_VALUE) {
+		LogWrite("[Uplay Emu] SAVE_Write: Failed to open file (Error: %lu)", GetLastError());
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
 	}
+	
+	// Seek past header
+	if (SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+		LogWrite("[Uplay Emu] SAVE_Write: SetFilePointer failed (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	DWORD written;
+	if (!WriteFile(hFile, actualBuffer, numBytes, &written, NULL)) {
+		LogWrite("[Uplay Emu] SAVE_Write: WriteFile failed (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Verify all bytes written
+	if (written != numBytes) {
+		LogWrite("[Uplay Emu] SAVE_Write: Partial write (Requested: %lu, Written: %lu)", numBytes, written);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Truncate file to exact size
+	if (SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
+		LogWrite("[Uplay Emu] SAVE_Write: SetFilePointer for truncate failed (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	if (!SetEndOfFile(hFile)) {
+		LogWrite("[Uplay Emu] SAVE_Write: SetEndOfFile failed (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Flush to disk
+	FlushFileBuffers(hFile);
+	
+	CloseHandle(hFile);
+	LogWrite("[Uplay Emu] Wrote %lu bytes", written);
 	
 	// Set overlapped result
 	FileRead* ovr = (FileRead*)overlapped;
