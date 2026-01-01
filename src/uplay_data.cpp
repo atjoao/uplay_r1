@@ -940,7 +940,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 			header[40 + i*2 + 1] = 0;
 		}
 		
-		if (SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+		if (SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER) {
 			LogWrite("[Uplay Emu] SAVE_Close: SetFilePointer failed (Error: %lu)", GetLastError());
 			CloseHandle(hFile);
 			memset(slot, 0, sizeof(SaveSlot));
@@ -1281,7 +1281,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	}
 	
 	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
-		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	
 	if (hFile == INVALID_HANDLE_VALUE) {
 		LogWrite("[Uplay Emu] SAVE_Write: Failed to open file (Error: %lu)", GetLastError());
