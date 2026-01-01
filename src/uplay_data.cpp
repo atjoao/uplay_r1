@@ -1117,7 +1117,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 	} else { // Write mode
 		// Create file with header if it doesn't exist
 		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
-			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
+			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, FILE_SHARE_READ, NULL,
 				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
 			if (hFile == INVALID_HANDLE_VALUE) {
 				LogWrite("[Uplay Emu] Failed to create save file (Error: %lu)", GetLastError());
