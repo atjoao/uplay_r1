@@ -1,8 +1,7 @@
 /*
- * Uplay Hook ASI Plugin (MinHook version)
+ * Uplay Hook ASI Plugin
  * 
- * Intercepts uplay_r1_loader64.dll and redirects exports to our emulator.
- * Uses MinHook library for clean, reliable hooking.
+ * Intercepts uplay_r1_loader64.dll exports and redirects to the emulator.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -11,10 +10,6 @@
 #include <cstdio>
 #include <cstring>
 #include "minhook/include/MinHook.h"
-
-// ============================================================================
-// Configuration
-// ============================================================================
 
 #ifdef _WIN64
     #define EMULATOR_DLL_NAME "emu.upc_r1_loader64.dll"
@@ -30,19 +25,10 @@ static const char* g_TargetDlls[] = {
     nullptr
 };
 
-// ============================================================================
-// Globals
-// ============================================================================
-
 static HMODULE g_OurModule = nullptr;
 static HMODULE g_EmulatorModule = nullptr;
 static HMODULE g_HookedUplayModule = nullptr;
 static bool g_HooksInstalled = false;
-
-// ============================================================================
-// Logging
-// ============================================================================
-
 static FILE* g_LogFile = nullptr;
 
 void InitLog() {
@@ -68,10 +54,6 @@ void Log(const char* fmt, ...) {
     fflush(g_LogFile);
 }
 
-// ============================================================================
-// Utility Functions
-// ============================================================================
-
 bool IsTargetDll(const char* path) {
     if (!path) return false;
     
@@ -83,10 +65,6 @@ bool IsTargetDll(const char* path) {
     }
     return false;
 }
-
-// ============================================================================
-// Emulator Loading
-// ============================================================================
 
 void LoadEmulatorDll() {
     if (g_EmulatorModule) return;
@@ -107,21 +85,15 @@ void LoadEmulatorDll() {
     }
 }
 
-// ============================================================================
-// Hook Uplay Exports using MinHook
-// ============================================================================
-
 void HookAllExports(HMODULE uplayModule) {
     if (!uplayModule || !g_EmulatorModule) {
         Log("[Uplay Hook] HookAllExports: Missing module");
         return;
     }
     
-    Log("[Uplay Hook] ========================================");
-    Log("[Uplay Hook] Hooking exports using MinHook");
-    Log("[Uplay Hook] Original Uplay DLL: 0x%p", uplayModule);
-    Log("[Uplay Hook] Emulator DLL:       0x%p", g_EmulatorModule);
-    Log("[Uplay Hook] ========================================");
+    Log("[Uplay Hook] Hooking exports");
+    Log("[Uplay Hook] Uplay DLL: 0x%p", uplayModule);
+    Log("[Uplay Hook] Emulator DLL: 0x%p", g_EmulatorModule);
     
     // Get Uplay export directory
     PIMAGE_DOS_HEADER uplayDos = (PIMAGE_DOS_HEADER)uplayModule;
@@ -174,10 +146,6 @@ void HookAllExports(HMODULE uplayModule) {
     Log("[Uplay Hook] ========================================");
 }
 
-// ============================================================================
-// Find and Hook Already Loaded Uplay DLL
-// ============================================================================
-
 HMODULE FindUplayModule() {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
     if (snapshot == INVALID_HANDLE_VALUE) return nullptr;
@@ -212,10 +180,6 @@ void TryHookUplay() {
         }
     }
 }
-
-// ============================================================================
-// DLL Notification Callback
-// ============================================================================
 
 typedef LONG NTSTATUS;
 
@@ -279,18 +243,8 @@ void RegisterDllNotification() {
     }
 }
 
-// ============================================================================
-// Initialization
-// ============================================================================
-
 void Initialize() {
     InitLog();
-    Log("[Uplay Hook] ============================================");
-    Log("[Uplay Hook] Uplay Hook ASI Plugin (MinHook version)");
-    Log("[Uplay Hook] Our module: 0x%p", g_OurModule);
-    Log("[Uplay Hook] ============================================");
-    
-    // Initialize MinHook
     MH_STATUS mhStatus = MH_Initialize();
     Log("[Uplay Hook] MH_Initialize: %s", MH_StatusToString(mhStatus));
     
@@ -299,18 +253,12 @@ void Initialize() {
         return;
     }
     
-    // Register for DLL load notifications
     RegisterDllNotification();
     
-    // Check if Uplay DLL is already loaded
     TryHookUplay();
     
     Log("[Uplay Hook] Initialization complete");
 }
-
-// ============================================================================
-// DLL Entry Point
-// ============================================================================
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved) {
     (void)reserved;

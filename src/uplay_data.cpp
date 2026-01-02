@@ -220,6 +220,8 @@ namespace Uplay_Configuration
 	bool Offline = false;
 	bool appowned = true;
 	bool logging = false;
+	bool friends = false;
+	bool party = false;
 
 	int cdkey1 = 0;
 	int cdkey2 = 0;
@@ -440,11 +442,13 @@ UPLAY_EXPORT int UPLAY_FRIENDS_AddToBlackList()
 	LOG_FUNC();
 	return 0;
 }
+
 UPLAY_EXPORT int UPLAY_FRIENDS_DisableFriendMenuItem()
 {
 	LOG_FUNC();
 	return 0;
 }
+
 UPLAY_EXPORT int UPLAY_FRIENDS_EnableFriendMenuItem()
 {
 	LOG_FUNC();
@@ -458,8 +462,7 @@ UPLAY_EXPORT int UPLAY_FRIENDS_GetFriendList()
 UPLAY_EXPORT int UPLAY_FRIENDS_Init()
 {
 	LOG_FUNC();
-	LogWrite("[Uplay Emu] UPLAY_FRIENDS_Init returning 0");
-	return 0;
+	return Uplay_Configuration::friends;
 }
 UPLAY_EXPORT int UPLAY_FRIENDS_InviteToGame()
 {
@@ -537,7 +540,6 @@ UPLAY_EXPORT int UPLAY_HasOverlappedOperationCompleted(void* buf1)
 UPLAY_EXPORT int UPLAY_INSTALLER_AreChunksInstalled(void* chunkIds, int chunkCount, void* outResult)
 {
 	LOG_FUNC();
-	LogWrite("[Uplay Emu] AreChunksInstalled: chunkIds=%p, count=%d", chunkIds, chunkCount);
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_INSTALLER_GetChunkIdsFromTag()
@@ -699,7 +701,7 @@ UPLAY_EXPORT int UPLAY_PARTY_GetInGameMemberList()
 UPLAY_EXPORT int UPLAY_PARTY_Init()
 {
 	LOG_FUNC();
-	return 1;
+	return Uplay_Configuration::party;
 }
 UPLAY_EXPORT int UPLAY_PARTY_InvitePartyToGame()
 {
@@ -984,17 +986,12 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 
 UPLAY_EXPORT int UPLAY_SAVE_GetSavegames(void* outListPtr, void* overlapped)
 {
-    LOG_FUNC();
-    LogWrite("[Uplay Emu] === UPLAY_SAVE_GetSavegames START ===");
-    
+    LOG_FUNC();    
     // Find all . save files
     char searchPath[MAX_PATH];
     sprintf(searchPath, "%s\\*.save", g_SavePath);
-    LogWrite("[Uplay Emu] Searching in: %s", searchPath);
-    
     WIN32_FIND_DATAA fd;
     HANDLE hFind = FindFirstFileA(searchPath, &fd);
-    
     // Count files
     DWORD fileCount = 0;
     if (hFind != INVALID_HANDLE_VALUE) {
@@ -1551,6 +1548,8 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "; Ticket ID for authentication\nTickedId=noT456umPqRt\n");
 			fprintf(iniFile, "\n; Enable logging to uplay_emu.log or Console (0 = disabled, 1 = enabled)\nLogging=0\n");
 			fprintf(iniFile, "EnableConsole=0\n");
+			fprintf(iniFile, "\n; Enable Friends/Party features (0 = disabled, 1 = enabled, this is for returning values to the game in case of crashing)\nFriends=0\n");
+			fprintf(iniFile, "Party=0\n");
 
 			fclose(iniFile);
 		} else {
@@ -1570,6 +1569,8 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 	GetPrivateProfileStringA("Uplay", "CdKey", 0, Uplay_Configuration::CdKey, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "UserId", 0, Uplay_Configuration::UserId, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
+	Uplay_Configuration::friends = GetPrivateProfileIntA("Uplay", "Friends", 0, INI) == TRUE;
+	Uplay_Configuration::party = GetPrivateProfileIntA("Uplay", "Party", 0, INI) == TRUE;
 
 	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
 	InitAchievementPath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
@@ -1713,7 +1714,6 @@ UPLAY_EXPORT int UPLAY_USER_IsConnected()
 UPLAY_EXPORT int UPLAY_USER_IsInOfflineMode()
 {
 	LOG_FUNC();
-	LogWrite("[Uplay Emu] UPLAY_USER_IsInOfflineMode returning %d", Uplay_Configuration::Offline);
 	return Uplay_Configuration::Offline;
 }
 UPLAY_EXPORT int UPLAY_USER_IsOwned(int data)
