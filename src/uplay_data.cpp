@@ -130,24 +130,28 @@ static char g_AchievementMappingPath[MAX_PATH] = {0};
 bool g_StatsRequested = false;
 bool g_StatsReady = false;
 int g_AchievementsCount = 0;
+static std::vector<DWORD> g_PendingAchievements;  // Queue for achievements requested before stats ready
 
 // Steam Flat API function pointers (all __cdecl, first arg is interface ptr)
 typedef void* (__cdecl *FnSteamUserStats)();
 typedef void  (__cdecl *FnRunCallbacks)();
-typedef bool  (__cdecl *FnRequestCurrentStats)(void*);
-typedef bool  (__cdecl *FnSetAchievement)(void*, const char*);
-typedef bool  (__cdecl *FnStoreStats)(void*);
-typedef bool  (__cdecl *FnGetAchievement)(void*, const char*, bool*);
-typedef uint32_t (__cdecl *FnGetNumAchievements)(void*);
-typedef const char* (__cdecl *FnGetAchievementName)(void*, uint32_t);
+typedef bool  (__cdecl *FnRequestCurrentStats)(void* self);
+typedef bool  (__cdecl *FnSetAchievement)(void* self, const char* pchName);
+typedef bool  (__cdecl *FnClearAchievement)(void* self, const char* pchName);
+typedef bool  (__cdecl *FnStoreStats)(void* self);
+typedef bool  (__cdecl *FnGetAchievement)(void* self, const char* pchName, bool* pbAchieved);
+typedef uint32_t (__cdecl *FnGetNumAchievements)(void* self);
+typedef const char* (__cdecl *FnGetAchievementName)(void* self, uint32_t iAchievement);
 
-static FnRunCallbacks       g_RunCallbacks = nullptr;
+static FnRunCallbacks        g_RunCallbacks = nullptr;
 static FnRequestCurrentStats g_RequestCurrentStats = nullptr;
-static FnSetAchievement     g_SetAchievement = nullptr;
-static FnStoreStats         g_StoreStats = nullptr;
-static FnGetNumAchievements g_GetNumAchievements = nullptr;
-static FnGetAchievementName g_GetAchievementName = nullptr;
-static FnGetAchievement g_GetAchievement = nullptr;
+static FnSetAchievement      g_SetAchievement = nullptr;
+static FnClearAchievement    g_ClearAchievement = nullptr;
+static FnStoreStats          g_StoreStats = nullptr;
+static FnGetNumAchievements  g_GetNumAchievements = nullptr;
+static FnGetAchievementName  g_GetAchievementName = nullptr;
+static FnGetAchievement      g_GetAchievement = nullptr;
+
 
 // Forward declarations for Steam API functions
 void InitSteamApi();
@@ -161,6 +165,19 @@ struct UPLAY_ACH_Achievement
     const char* nameUtf8;
     const char* descriptionUtf8;
     bool earned;
+};
+#pragma pack(pop)
+
+#pragma pack(push, 8)
+struct SaveGameEntry {
+    uint64_t id;
+    char* nameUtf8;
+    uint64_t size;
+};
+
+struct SaveListHeader {
+    uint64_t count;
+    void** entries;
 };
 #pragma pack(pop)
 
@@ -299,22 +316,33 @@ bool IsTargetExist(LPCSTR path)
 
 UPLAY_EXPORT int UPLAY_ACH_EarnAchievement(DWORD achievementId, void* overlapped)
 {
-	LOG_FUNC();
-	LogWrite("[Uplay Emu] EarnAchievement: id=%lu", achievementId);
-	
-	UnlockAchievement(achievementId);
-	UnlockSteamAchievement(achievementId);
-	
-	// Set overlapped result
-	if (overlapped) {
-		FileRead* ovr = (FileRead*)overlapped;
+    LOG_FUNC();
+    LogWrite("[Uplay Emu] ====== EarnAchievement called ======");
+    LogWrite("[Uplay Emu] Achievement ID: %lu", achievementId);
+    
+    // Unlock in local storage
+    bool localResult = UnlockAchievement(achievementId);
+    LogWrite("[Uplay Emu] Local unlock result: %d", localResult);
+    
+    // Sync to Steam if enabled
+    if (g_SteamSyncEnabled) {
+        LogWrite("[Uplay Emu] Attempting Steam sync...");
+        UnlockSteamAchievement(achievementId);
+    } else {
+        LogWrite("[Uplay Emu] Steam sync disabled");
+    }
+    
+    if (overlapped) {
+        FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
 		ovr->addr3 = 0;
-	}
-	
-	return 1;
+    }
+    
+    LogWrite("[Uplay Emu] ====== EarnAchievement complete ======");
+    return 1;
 }
+
 UPLAY_EXPORT int UPLAY_ACH_GetAchievementImage()
 {
 	LOG_FUNC();
@@ -530,17 +558,14 @@ UPLAY_EXPORT int UPLAY_FRIENDS_ShowInviteFriendsToGameUI()
 }
 UPLAY_EXPORT int UPLAY_GetLastError()
 {
-	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetNextEvent()
 {
-	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
 {
-	LOG_FUNC();
 	Overmapped* ovr = (Overmapped*)buf1;
 	if (!ovr->f4) {
 		return 0;
@@ -944,59 +969,101 @@ void InitSteamApi() {
     if (g_SteamApiModule) {
         LogWrite("[Uplay Emu] steam_api already loaded at 0x%p", g_SteamApiModule);
     }
+
+	// Step 1.1 : Try to load globally
+	if (!g_SteamApiModule) {
+		g_SteamApiModule = LoadLibraryA(steamApiName);
+		if (g_SteamApiModule) {
+			LogWrite("[Uplay Emu] Loaded steam_api globally:  %s", steamApiName);
+		}
+	}
     
     // Step 2: Try to load from game directory
     if (!g_SteamApiModule) {
         char gamePath[MAX_PATH] = {0};
-        GetModuleFileNameA(NULL, gamePath, MAX_PATH);  // Get game exe path
+        GetModuleFileNameA(NULL, gamePath, MAX_PATH);
         char* p = strrchr(gamePath, '\\');
         if (p) {
             strcpy(p + 1, steamApiName);
             if (GetFileAttributesA(gamePath) != INVALID_FILE_ATTRIBUTES) {
                 g_SteamApiModule = LoadLibraryA(gamePath);
                 if (g_SteamApiModule) {
-                    LogWrite("[Uplay Emu] Loaded steam_api from game dir: %s", gamePath);
+                    LogWrite("[Uplay Emu] Loaded steam_api from game dir:  %s", gamePath);
                 }
             }
         }
     }
 
-    // Step 4: Disable if all attempts failed
     if (!g_SteamApiModule) {
         LogWrite("[Uplay Emu] Could not find or load steam_api, Steam sync disabled");
         g_SteamSyncEnabled = false;
         return;
     }
     
-    // SteamAPI_InitFlat returns 0 (k_ESteamAPIInitResult_OK) on success
-    typedef int (__cdecl *SteamAPI_InitFlat_t)(char*);
-	SteamAPI_InitFlat_t SteamAPI_InitFlat = nullptr;
+    // Try SteamAPI_InitFlat first (newer API), fall back to SteamAPI_Init
+    typedef int (__cdecl *SteamAPI_InitFlat_t)(char* pszErrMsg);
+    typedef bool (__cdecl *SteamAPI_Init_t)();
     
-	SteamAPI_InitFlat = (SteamAPI_InitFlat_t)GetProcAddress(g_SteamApiModule, "SteamAPI_InitFlat");
-	if (SteamAPI_InitFlat) {
-		LogWrite("[Uplay Emu] Found init function: %s", "SteamAPI_InitFlat");
-	} else {
-		LogWrite("[Uplay Emu] No init function found - Steam sync disabled");
-		g_SteamSyncEnabled = false;
-        return;
-	}
-	
-    char errMsg[1024] = {0};
-    int res = SteamAPI_InitFlat(errMsg);
-    if (res == 0) {
-        LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
-    } else {
-        LogWrite("[Uplay Emu] SteamAPI_InitFlat() failed with error %d: %s", res, errMsg);
+    SteamAPI_InitFlat_t SteamAPI_InitFlat = (SteamAPI_InitFlat_t)GetProcAddress(g_SteamApiModule, "SteamAPI_InitFlat");
+    SteamAPI_Init_t SteamAPI_Init = (SteamAPI_Init_t)GetProcAddress(g_SteamApiModule, "SteamAPI_Init");
+    
+    bool initSuccess = false;
+    
+    if (SteamAPI_InitFlat) {
+        LogWrite("[Uplay Emu] Found init function:  SteamAPI_InitFlat");
+        char errBuffer[1024] = {0};
+        int res = SteamAPI_InitFlat(errBuffer);
+        if (res == 0) {
+            LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
+            initSuccess = true;
+        } else {
+            LogWrite("[Uplay Emu] SteamAPI_InitFlat() failed with error %d:  %s", res, 
+                     errBuffer[0] ? errBuffer : "(no message)");
+        }
+    }
+    
+    if (!initSuccess && SteamAPI_Init) {
+        LogWrite("[Uplay Emu] Trying fallback:  SteamAPI_Init");
+        if (SteamAPI_Init()) {
+            LogWrite("[Uplay Emu] SteamAPI_Init() succeeded");
+            initSuccess = true;
+        } else {
+            LogWrite("[Uplay Emu] SteamAPI_Init() failed");
+        }
+    }
+    
+    if (!initSuccess) {
+        LogWrite("[Uplay Emu] No init function succeeded - Steam sync disabled");
         g_SteamSyncEnabled = false;
         return;
     }
 
+    // Manual dispatch init (optional)
+    typedef void (__cdecl *SteamAPI_ManualDispatch_Init_t)();
+    SteamAPI_ManualDispatch_Init_t SteamAPI_ManualDispatch_Init = 
+        (SteamAPI_ManualDispatch_Init_t)GetProcAddress(g_SteamApiModule, "SteamAPI_ManualDispatch_Init");
+    if (SteamAPI_ManualDispatch_Init) {
+        LogWrite("[Uplay Emu] Calling SteamAPI_ManualDispatch_Init");
+        SteamAPI_ManualDispatch_Init();
+    }
+
     // Get SteamUserStats interface
     FnSteamUserStats fnGetUserStats = nullptr;
-    fnGetUserStats = (FnSteamUserStats)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUserStats_v012");
-    if (!fnGetUserStats) {
-        fnGetUserStats = (FnSteamUserStats)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUserStats_v011");
+    const char* userStatsVersions[] = {
+        "SteamAPI_SteamUserStats_v012",
+        "SteamAPI_SteamUserStats_v011",
+        "SteamAPI_SteamUserStats",
+        nullptr
+    };
+    
+    for (int i = 0; userStatsVersions[i] != nullptr; i++) {
+        fnGetUserStats = (FnSteamUserStats)GetProcAddress(g_SteamApiModule, userStatsVersions[i]);
+        if (fnGetUserStats) {
+            LogWrite("[Uplay Emu] Found UserStats accessor: %s", userStatsVersions[i]);
+            break;
+        }
     }
+    
     if (!fnGetUserStats) {
         LogWrite("[Uplay Emu] No SteamUserStats accessor found - Steam sync disabled");
         g_SteamSyncEnabled = false;
@@ -1009,18 +1076,18 @@ void InitSteamApi() {
         g_SteamSyncEnabled = false;
         return;
     }
-    LogWrite("[Uplay Emu] Got SteamUserStats interface: 0x%p", g_SteamUserStats);
+    LogWrite("[Uplay Emu] Got SteamUserStats interface:  0x%p", g_SteamUserStats);
 
     // Get all required function pointers
     g_RunCallbacks = (FnRunCallbacks)GetProcAddress(g_SteamApiModule, "SteamAPI_RunCallbacks");
     g_RequestCurrentStats = (FnRequestCurrentStats)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_RequestCurrentStats");
     g_SetAchievement = (FnSetAchievement)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_SetAchievement");
+    g_ClearAchievement = (FnClearAchievement)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_ClearAchievement");
     g_StoreStats = (FnStoreStats)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_StoreStats");
     g_GetNumAchievements = (FnGetNumAchievements)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetNumAchievements");
     g_GetAchievementName = (FnGetAchievementName)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetAchievementName");
     g_GetAchievement = (FnGetAchievement)GetProcAddress(g_SteamApiModule, "SteamAPI_ISteamUserStats_GetAchievement");
 
-    // Validate required functions
     if (!g_SetAchievement) {
         LogWrite("[Uplay Emu] SetAchievement not found - Steam sync disabled");
         g_SteamSyncEnabled = false;
@@ -1031,21 +1098,35 @@ void InitSteamApi() {
     LogWrite("[Uplay Emu]   RunCallbacks: 0x%p", g_RunCallbacks);
     LogWrite("[Uplay Emu]   RequestCurrentStats: 0x%p", g_RequestCurrentStats);
     LogWrite("[Uplay Emu]   SetAchievement: 0x%p", g_SetAchievement);
-    LogWrite("[Uplay Emu]   StoreStats: 0x%p", g_StoreStats);
+    LogWrite("[Uplay Emu]   ClearAchievement: 0x%p", g_ClearAchievement);
+    LogWrite("[Uplay Emu]   StoreStats:  0x%p", g_StoreStats);
     LogWrite("[Uplay Emu]   GetNumAchievements: 0x%p", g_GetNumAchievements);
+    LogWrite("[Uplay Emu]   GetAchievement: 0x%p", g_GetAchievement);
 
-    // Request stats (async - will be ready after callbacks processed)
+    // Request stats
     if (g_RequestCurrentStats) {
-        g_RequestCurrentStats(g_SteamUserStats);
+        bool requested = g_RequestCurrentStats(g_SteamUserStats);
         g_StatsRequested = true;
-        LogWrite("[Uplay Emu] RequestCurrentStats() called");
+        LogWrite("[Uplay Emu] RequestCurrentStats() returned: %d", requested);
     }
     
-    // Try to get and log AppID
+    // Log AppID
     typedef void* (__cdecl *FnSteamUtils)();
     typedef uint32_t (__cdecl *FnGetAppID)(void*);
-    FnSteamUtils fnUtils = (FnSteamUtils)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUtils_v010");
-    if (!fnUtils) fnUtils = (FnSteamUtils)GetProcAddress(g_SteamApiModule, "SteamAPI_SteamUtils_v009");
+    
+    FnSteamUtils fnUtils = nullptr;
+    const char* utilsVersions[] = {
+        "SteamAPI_SteamUtils_v010",
+        "SteamAPI_SteamUtils_v009",
+        "SteamAPI_SteamUtils",
+        nullptr
+    };
+    
+    for (int i = 0; utilsVersions[i] != nullptr; i++) {
+        fnUtils = (FnSteamUtils)GetProcAddress(g_SteamApiModule, utilsVersions[i]);
+        if (fnUtils) break;
+    }
+    
     if (fnUtils) {
         void* utils = fnUtils();
         if (utils) {
@@ -1070,54 +1151,88 @@ void InitAchievementMappingPath() {
     LogWrite("[Uplay Emu] Achievement mapping path: %s", g_AchievementMappingPath);
 }
 
+// Forward declaration
+void ProcessPendingAchievements();
+
 void UnlockSteamAchievement(DWORD achId) {
-    if (!g_SteamSyncEnabled) return;
-    if (!g_SteamUserStats || !g_SetAchievement) return;
-	if (!g_StatsReady) {
-		LogWrite("[Uplay Emu] Steam stats not ready yet, skipping unlock");
-		return;
-	}
+    if (! g_SteamSyncEnabled) {
+        LogWrite("[Uplay Emu] Steam sync disabled, skipping achievement %lu", achId);
+        return;
+    }
+    
+    if (!g_SteamUserStats) {
+        LogWrite("[Uplay Emu] SteamUserStats is NULL, cannot unlock achievement %lu", achId);
+        return;
+    }
+    
+    if (!g_SetAchievement) {
+        LogWrite("[Uplay Emu] SetAchievement function not available");
+        return;
+    }
+    
+    if (! g_StatsReady) {
+        // Queue the achievement for later processing
+        g_PendingAchievements.push_back(achId);
+        LogWrite("[Uplay Emu] Steam stats not ready, queued achievement %lu (queue size: %zu)", 
+                 achId, g_PendingAchievements.size());
+        return;
+    }
     
     InitAchievementMappingPath();
     
-    // Lookup Steam name from user-created achievements.ini
-    // Format: [Mapping] section with UplayId=SteamAchievementName
-    char key[16], steamName[256] = {0};
+    // Lookup Steam name from achievements. ini
+    char key[32];
+    char steamName[256] = {0};
     sprintf(key, "%lu", achId);
     GetPrivateProfileStringA("Mapping", key, "", steamName, sizeof(steamName), g_AchievementMappingPath);
     
     if (steamName[0] == 0) {
         LogWrite("[Uplay Emu] No Steam mapping for Uplay achievement %lu", achId);
-        LogWrite("[Uplay Emu] Add to achievements.ini: [Mapping] %lu=STEAM_ACH_NAME", achId);
+        LogWrite("[Uplay Emu] Add to achievements.ini: [Mapping]");
+        LogWrite("[Uplay Emu] %lu=STEAM_ACHIEVEMENT_API_NAME", achId);
         return;
     }
     
-    LogWrite("[Uplay Emu] Attempting SetAchievement('%s')", steamName);
-    LogWrite("[Uplay Emu]   g_SteamUserStats=0x%p, g_SetAchievement=0x%p", g_SteamUserStats, g_SetAchievement);
-    LogWrite("[Uplay Emu]   g_StatsReady=%d, g_AchievementsCount=%d", g_StatsReady, g_AchievementsCount);
+    LogWrite("[Uplay Emu] Unlocking Steam achievement:  '%s' (Uplay ID: %lu)", steamName, achId);
     
-    // Check current state first
+    // Check if already unlocked
     if (g_GetAchievement) {
         bool alreadyUnlocked = false;
         bool gotState = g_GetAchievement(g_SteamUserStats, steamName, &alreadyUnlocked);
-        LogWrite("[Uplay Emu]   GetAchievement returned: %d, unlocked=%d", gotState, alreadyUnlocked);
-        if (alreadyUnlocked) {
-            LogWrite("[Uplay Emu] Achievement '%s' is already unlocked!", steamName);
+        
+        if (! gotState) {
+            LogWrite("[Uplay Emu] WARNING: GetAchievement('%s') failed - achievement may not exist!", steamName);
+            LogWrite("[Uplay Emu] Check that '%s' matches a Steam achievement API name", steamName);
+            // Continue anyway, SetAchievement will also fail if name is wrong
+        } else if (alreadyUnlocked) {
+            LogWrite("[Uplay Emu] Achievement '%s' is already unlocked, skipping", steamName);
             return;
         }
     }
     
+    // Set the achievement
     bool result = g_SetAchievement(g_SteamUserStats, steamName);
-    LogWrite("[Uplay Emu]   SetAchievement returned: %d", result);
     
     if (result) {
-        LogWrite("[Uplay Emu] Steam achievement '%s' unlocked!", steamName);
+        LogWrite("[Uplay Emu] SetAchievement('%s') succeeded!", steamName);
+        
+        // Store stats to commit the change
         if (g_StoreStats) {
             bool stored = g_StoreStats(g_SteamUserStats);
-            LogWrite("[Uplay Emu] StoreStats returned: %d", stored);
+            LogWrite("[Uplay Emu] StoreStats() returned: %d", stored);
+            
+            if (! stored) {
+                LogWrite("[Uplay Emu] WARNING: StoreStats failed, achievement may not persist!");
+            }
+        } else {
+            LogWrite("[Uplay Emu] WARNING: StoreStats not available, achievement may not persist!");
         }
     } else {
-        LogWrite("[Uplay Emu] FAILED to unlock Steam achievement '%s'", steamName);
+        LogWrite("[Uplay Emu] FAILED: SetAchievement('%s') returned false", steamName);
+        LogWrite("[Uplay Emu] Possible causes:");
+        LogWrite("[Uplay Emu]   - Achievement name '%s' doesn't exist in Steam", steamName);
+        LogWrite("[Uplay Emu]   - Stats not fully loaded yet");
+        LogWrite("[Uplay Emu]   - Steam API error");
     }
 }
 
@@ -1126,12 +1241,14 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_Close: slotId=%lu", slotId);
 	
-	if (slotId >= 256 || !g_SaveSlots[slotId].inUse)
+	if (slotId >= 256 || !g_SaveSlots[slotId].inUse) {
+		LogWrite("[Uplay Emu] SAVE_Close: Invalid or unused slot");
 		return 0;
+	}
 	
 	SaveSlot* slot = &g_SaveSlots[slotId];
 	
-	// If mode was 1 (write), write the header
+	// If mode was 1 (write), update the header
 	if (slot->mode == 1) {
 		if (slot->saveName[0] == 0)
 			strcpy(slot->saveName, "Unnamed");
@@ -1139,32 +1256,53 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 		char savePath[MAX_PATH];
 		GetSaveFilePath(slotId, savePath);
 		
+		// Verify file exists
+		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+			LogWrite("[Uplay Emu] SAVE_Close: Save file doesn't exist:  %s", savePath);
+			// Clear slot anyway
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
+		}
+		
 		HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL, 
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-		if (hFile != INVALID_HANDLE_VALUE) {
-			// Create 552-byte header
-			BYTE header[SAVE_HEADER_SIZE] = {0};
-			
-			// Write header size - 4 at offset 0
-			DWORD headerSizeValue = SAVE_HEADER_SIZE - 4;
-			memcpy(header, &headerSizeValue, 4);
-			
-			// Write save name as Unicode at offset 40
-			int nameLen = strlen(slot->saveName);
-			for (int i = 0; i < nameLen && (40 + i*2 + 1) < SAVE_HEADER_SIZE; i++) {
-				header[40 + i*2] = (BYTE)slot->saveName[i];
-				header[40 + i*2 + 1] = 0;
-			}
-			
-			SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
-			DWORD written;
-			WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
-			CloseHandle(hFile);
-			LogWrite("[Uplay Emu] Header written for slot %lu", slotId);
+		
+		if (hFile == INVALID_HANDLE_VALUE) {
+			LogWrite("[Uplay Emu] SAVE_Close: Failed to open file for header update (Error: %lu)", GetLastError());
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
 		}
+		
+		// Create 552-byte header
+		BYTE header[SAVE_HEADER_SIZE] = {0};
+		
+		// Write header size - 4 at offset 0
+		DWORD headerSizeValue = SAVE_HEADER_SIZE - 4;
+		memcpy(header, &headerSizeValue, 4);
+		
+		// Write save name as Unicode at offset 40
+		int nameLen = strlen(slot->saveName);
+		for (int i = 0; i < nameLen && (40 + i*2 + 1) < SAVE_HEADER_SIZE; i++) {
+			header[40 + i*2] = (BYTE)slot->saveName[i];
+			header[40 + i*2 + 1] = 0;
+		}
+		
+		SetFilePointer(hFile, 0, NULL, FILE_BEGIN);
+		DWORD written = 0;
+		
+		if (!WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL) || written != SAVE_HEADER_SIZE) {
+			LogWrite("[Uplay Emu] SAVE_Close: Failed to write header (Error: %lu, Written: %lu)", GetLastError(), written);
+			CloseHandle(hFile);
+			memset(slot, 0, sizeof(SaveSlot));
+			return 0;
+		}
+		
+		FlushFileBuffers(hFile);
+		CloseHandle(hFile);
+		LogWrite("[Uplay Emu] SAVE_Close: Header written for slot %lu", slotId);
 	}
 	
-	// Close file handle if exists
+	// Close file handle if exists (for read mode)
 	if (slot->fileHandle && slot->fileHandle != INVALID_HANDLE_VALUE) {
 		CloseHandle(slot->fileHandle);
 	}
@@ -1176,108 +1314,156 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 
 UPLAY_EXPORT int UPLAY_SAVE_GetSavegames(void* outListPtr, void* overlapped)
 {
-	LOG_FUNC();
-	
-	// Find all .save files in save directory
-	char searchPath[MAX_PATH];
-	sprintf(searchPath, "%s\\*.save", g_SavePath);
-	
-	// Count files first
-	WIN32_FIND_DATAA fd;
-	HANDLE hFind = FindFirstFileA(searchPath, &fd);
-	DWORD fileCount = 0;
-	
-	if (hFind != INVALID_HANDLE_VALUE) {
-		do {
-			if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-				fileCount++;
-		} while (FindNextFileA(hFind, &fd));
-		FindClose(hFind);
-	}
-	
-	LogWrite("[Uplay Emu] Found %lu save files", fileCount);
-	
-	// Allocate list structure
-	void* listBuffer = VirtualAlloc(NULL, 0x1000, MEM_COMMIT, PAGE_READWRITE);
-	void* entriesBuffer = VirtualAlloc(NULL, 0x10000, MEM_COMMIT, PAGE_READWRITE);
-	
-	ULONG_PTR* listHeader = (ULONG_PTR*)listBuffer;
-	listHeader[0] = fileCount;  // count
-	listHeader[1] = (ULONG_PTR)entriesBuffer;  // pointer to entries
-	
-	// Fill entries
-	hFind = FindFirstFileA(searchPath, &fd);
-	DWORD entryIndex = 0;
-	
-	if (hFind != INVALID_HANDLE_VALUE) {
-		do {
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-				continue;
-			
-			// Parse slot ID from filename
-			DWORD slotId = strtoul(fd.cFileName, NULL, 10);
-			
-			// Build full path
-			char fullPath[MAX_PATH];
-			sprintf(fullPath, "%s\\%s", g_SavePath, fd.cFileName);
-			
-			// Get file size
-			HANDLE hFile = CreateFileA(fullPath, GENERIC_READ, FILE_SHARE_READ, NULL,
-				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-			DWORD fileSize = 0;
-			char saveName[256] = "Unnamed";
-			
-			if (hFile != INVALID_HANDLE_VALUE) {
-				fileSize = GetFileSize(hFile, NULL);
-				if (fileSize > SAVE_HEADER_SIZE)
-					fileSize -= SAVE_HEADER_SIZE;
-				else
-					fileSize = 0;
-				
-				// Read save name from header
-				BYTE header[SAVE_HEADER_SIZE];
-				DWORD bytesRead;
-				if (ReadFile(hFile, header, SAVE_HEADER_SIZE, &bytesRead, NULL) && bytesRead >= SAVE_HEADER_SIZE) {
-					// Extract Unicode name from offset 40
-					int nameIdx = 0;
-					for (int i = 40; i < SAVE_HEADER_SIZE - 1 && nameIdx < 255; i += 2) {
-						if (header[i] == 0 && header[i+1] == 0) break;
-						saveName[nameIdx++] = (char)header[i];
-					}
-					saveName[nameIdx] = 0;
-				}
-				CloseHandle(hFile);
-			}
-			
-			// Allocate entry structure
-			void* entryBuffer = VirtualAlloc(NULL, 0x100, MEM_COMMIT, PAGE_READWRITE);
-			
-			// FileList structure: { DWORD num, void* bufferstring, DWORD pointer(size) }
-			DWORD* entry = (DWORD*)entryBuffer;
-			char* nameBuffer = (char*)VirtualAlloc(NULL, 0x200, MEM_COMMIT, PAGE_READWRITE);
-			strcpy(nameBuffer, saveName);
-			
-			entry[0] = slotId;              // id
-			*(void**)&entry[1] = nameBuffer; // name pointer
-			entry[2] = fileSize;            // size
-			
-			// Store entry pointer in entries array
-			((void**)entriesBuffer)[entryIndex++] = entryBuffer;
-			
-		} while (FindNextFileA(hFind, &fd));
-		FindClose(hFind);
-	}
-	
-	// Write list pointer
-	memcpy(outListPtr, &listBuffer, sizeof(void*));
-	
-	// Set overlapped result
-	FileRead* ovr = (FileRead*)overlapped;
-	ovr->addr1++;
-	ovr->addr2 = 1;
-	ovr->addr3 = 0;
-	
-	return 1;
+    LOG_FUNC();
+    LogWrite("[Uplay Emu] === UPLAY_SAVE_GetSavegames START ===");
+    
+    // Find all . save files
+    char searchPath[MAX_PATH];
+    sprintf(searchPath, "%s\\*.save", g_SavePath);
+    LogWrite("[Uplay Emu] Searching in: %s", searchPath);
+    
+    WIN32_FIND_DATAA fd;
+    HANDLE hFind = FindFirstFileA(searchPath, &fd);
+    
+    // Count files
+    DWORD fileCount = 0;
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                fileCount++;
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    LogWrite("[Uplay Emu] Found %lu save files", fileCount);
+    
+    // Allocate list header
+    SaveListHeader* listHeader = (SaveListHeader*)VirtualAlloc(NULL, sizeof(SaveListHeader), 
+                                                                MEM_COMMIT, PAGE_READWRITE);
+    if (!listHeader) {
+        LogWrite("[Uplay Emu] ERROR: Failed to allocate list header");
+        FileRead* ovr = (FileRead*)overlapped;
+        ovr->addr1++;
+        ovr->addr2 = 1;
+        ovr->addr3 = 0;
+        return 0;
+    }
+    
+    listHeader->count = (uint64_t)fileCount;
+    
+    // Allocate entries array (array of pointers)
+    void** entriesArray = (void**)VirtualAlloc(NULL, sizeof(void*) * fileCount, 
+                                                MEM_COMMIT, PAGE_READWRITE);
+    if (!entriesArray) {
+        LogWrite("[Uplay Emu] ERROR: Failed to allocate entries array");
+        VirtualFree(listHeader, 0, MEM_RELEASE);
+        FileRead* ovr = (FileRead*)overlapped;
+        ovr->addr1++;
+        ovr->addr2 = 1;
+        ovr->addr3 = 0;
+        return 0;
+    }
+    
+    listHeader->entries = entriesArray;
+    
+    // Fill entries
+    hFind = FindFirstFileA(searchPath, &fd);
+    DWORD entryIndex = 0;
+    
+    if (hFind != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            
+            // Parse slot ID from filename
+            uint64_t slotId = strtoull(fd.cFileName, NULL, 10);
+            
+            // Build full path
+            char fullPath[MAX_PATH];
+            sprintf(fullPath, "%s\\%s", g_SavePath, fd.cFileName);
+            
+            // Open file to read header and get size
+            HANDLE hFile = CreateFileA(fullPath, GENERIC_READ, FILE_SHARE_READ, NULL,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+            
+            uint64_t fileSize = 0;
+            char saveName[256] = "Unnamed";
+            
+            if (hFile != INVALID_HANDLE_VALUE) {
+                // Get total file size
+                DWORD fileSizeLow = GetFileSize(hFile, NULL);
+                
+                // Calculate data size (subtract header)
+                if (fileSizeLow >= SAVE_HEADER_SIZE) {
+                    fileSize = (uint64_t)(fileSizeLow - SAVE_HEADER_SIZE);
+                } else {
+                    fileSize = 0;
+                }
+                
+                // Read save name from header (if file is large enough)
+                if (fileSizeLow >= SAVE_HEADER_SIZE) {
+                    BYTE header[SAVE_HEADER_SIZE];
+                    DWORD bytesRead;
+                    
+                    if (ReadFile(hFile, header, SAVE_HEADER_SIZE, &bytesRead, NULL) && 
+                        bytesRead >= SAVE_HEADER_SIZE) {
+                        // Extract Unicode name from offset 40
+                        int nameIdx = 0;
+                        for (int i = 40; i < SAVE_HEADER_SIZE - 1 && nameIdx < 255; i += 2) {
+                            if (header[i] == 0 && header[i+1] == 0) 
+                                break;
+                            saveName[nameIdx++] = (char)header[i];
+                        }
+                        saveName[nameIdx] = 0;
+                    }
+                }
+                
+                CloseHandle(hFile);
+            }
+            
+            // Allocate entry
+            SaveGameEntry* entry = (SaveGameEntry*)VirtualAlloc(NULL, sizeof(SaveGameEntry), 
+                                                                  MEM_COMMIT, PAGE_READWRITE);
+            if (!entry) {
+                LogWrite("[Uplay Emu] ERROR: Failed to allocate entry %lu", entryIndex);
+                continue;
+            }
+            
+            // Allocate and copy name
+            char* nameBuffer = (char*)VirtualAlloc(NULL, 256, MEM_COMMIT, PAGE_READWRITE);
+            if (nameBuffer) {
+                strcpy(nameBuffer, saveName);
+            }
+            
+            // Fill entry
+            entry->id = slotId;
+            entry->nameUtf8 = nameBuffer;
+            entry->size = fileSize;
+            
+            // Store entry pointer in array
+            entriesArray[entryIndex++] = entry;
+            
+            LogWrite("[Uplay Emu]   [%lu] Slot=%llu, Name='%s', Size=%llu bytes",
+                     entryIndex - 1, entry->id, entry->nameUtf8, entry->size);
+            
+        } while (FindNextFileA(hFind, &fd));
+        FindClose(hFind);
+    }
+    
+    // Write list pointer to output (write the ADDRESS of listHeader)
+    memcpy(outListPtr, &listHeader, sizeof(void*));
+    
+    LogWrite("[Uplay Emu] List header at:  0x%p", listHeader);
+    LogWrite("[Uplay Emu] Entries array at: 0x%p", entriesArray);
+    LogWrite("[Uplay Emu] Returning pointer to outListPtr:  0x%p", outListPtr);
+    
+    // Set overlapped result
+    FileRead* ovr = (FileRead*)overlapped;
+    ovr->addr1++;
+    ovr->addr2 = 1;
+    ovr->addr3 = 0;
+    
+    return 1;
 }
 
 UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void* overlapped)
@@ -1286,6 +1472,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 	LogWrite("[Uplay Emu] SAVE_Open: slotId=%lu, mode=%lu", slotId, mode);
 	
 	if (slotId >= 256) {
+		LogWrite("[Uplay Emu] SAVE_Open: Invalid slot ID");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
@@ -1307,7 +1494,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 		HANDLE hFile = CreateFileA(savePath, GENERIC_READ, FILE_SHARE_READ, NULL,
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) {
-			LogWrite("[Uplay Emu] File not found: %s", savePath);
+			LogWrite("[Uplay Emu] File not found: %s (Error: %lu)", savePath, GetLastError());
 			slot->inUse = false;
 			FileRead* ovr = (FileRead*)overlapped;
 			ovr->addr1++;
@@ -1316,18 +1503,45 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 			return 0;
 		}
 		slot->fileHandle = hFile;
-	} else { // Write mode
-		// Create file with header if it doesn't exist
+	} else { // Write mode (mode == 1)
+		// Create file with proper header if it doesn't exist
 		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+			LogWrite("[Uplay Emu] Creating new save file: %s", savePath);
+			
 			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
 				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-			if (hFile != INVALID_HANDLE_VALUE) {
-				BYTE header[SAVE_HEADER_SIZE] = {0};
-				DWORD written;
-				WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
-				CloseHandle(hFile);
+			
+			if (hFile == INVALID_HANDLE_VALUE) {
+				LogWrite("[Uplay Emu] Failed to create file (Error: %lu)", GetLastError());
+				slot->inUse = false;
+				FileRead* ovr = (FileRead*)overlapped;
+				ovr->addr1++;
+				ovr->addr2 = 1;
+				ovr->addr3 = 0;
+				return 0;
 			}
+			
+			// Initialize header with zeros
+			BYTE header[SAVE_HEADER_SIZE] = {0};
+			DWORD written = 0;
+			
+			if (! WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL) || written != SAVE_HEADER_SIZE) {
+				LogWrite("[Uplay Emu] Failed to write header (Error: %lu, Written: %lu)", GetLastError(), written);
+				CloseHandle(hFile);
+				DeleteFileA(savePath); // Clean up incomplete file
+				slot->inUse = false;
+				FileRead* ovr = (FileRead*)overlapped;
+				ovr->addr1++;
+				ovr->addr2 = 1;
+				ovr->addr3 = 0;
+				return 0;
+			}
+			
+			CloseHandle(hFile);
+			LogWrite("[Uplay Emu] Created file with header, size: %lu bytes", written);
 		}
+		
+		// Don't keep file handle open in write mode
 		slot->fileHandle = NULL;
 	}
 	
@@ -1343,6 +1557,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 	LogWrite("[Uplay Emu] SAVE_Open success");
 	return 1;
 }
+
 
 UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, void* outBufferPtr, void* outBytesRead, void* overlapped)
 {
@@ -1377,11 +1592,43 @@ UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, voi
 
 UPLAY_EXPORT int UPLAY_SAVE_ReleaseGameList(void* listPointer)
 {
-	LOG_FUNC();
-	if (listPointer) {
-		VirtualFree(listPointer, 0, MEM_RELEASE);
-	}
-	return 1;
+    LOG_FUNC();
+    LogWrite("[Uplay Emu] Releasing game list at: 0x%p", listPointer);
+    
+    if (!listPointer) {
+        return 1;
+    }
+    
+    // Read the list header pointer
+    SaveListHeader* listHeader = *(SaveListHeader**)listPointer;
+    if (!listHeader) {
+        return 1;
+    }
+    
+    LogWrite("[Uplay Emu] List header at: 0x%p, count=%llu", listHeader, listHeader->count);
+    
+    // Free each entry
+    if (listHeader->entries) {
+        for (uint64_t i = 0; i < listHeader->count; i++) {
+            SaveGameEntry* entry = (SaveGameEntry*)listHeader->entries[i];
+            if (entry) {
+                // Free name string
+                if (entry->nameUtf8) {
+                    VirtualFree(entry->nameUtf8, 0, MEM_RELEASE);
+                }
+                // Free entry struct
+                VirtualFree(entry, 0, MEM_RELEASE);
+            }
+        }
+        // Free entries array
+        VirtualFree(listHeader->entries, 0, MEM_RELEASE);
+    }
+    
+    // Free list header
+    VirtualFree(listHeader, 0, MEM_RELEASE);
+    
+    LogWrite("[Uplay Emu] Game list freed");
+    return 1;
 }
 
 UPLAY_EXPORT int UPLAY_SAVE_Remove(DWORD slotId, void* overlapped)
@@ -1419,12 +1666,9 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_Write: slotId=%lu, bytes=%lu", slotId, numBytes);
 	
-	char savePath[MAX_PATH];
-	GetSaveFilePath(slotId, savePath);
-	
-	// Get actual buffer from pointer
-	void* actualBuffer = *(void**)bufferPtr;
-	if (!actualBuffer) {
+	// Validate slot
+	if (slotId >= 256 || !g_SaveSlots[slotId].inUse) {
+		LogWrite("[Uplay Emu] SAVE_Write: Invalid or unused slot");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
@@ -1432,25 +1676,132 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 		return 0;
 	}
 	
-	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-		OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	SaveSlot* slot = &g_SaveSlots[slotId];
 	
-	if (hFile != INVALID_HANDLE_VALUE) {
-		// Seek past header
-		SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
-		
-		DWORD written;
-		WriteFile(hFile, actualBuffer, numBytes, &written, NULL);
-		
-		// Truncate file to exact size
-		SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
-		SetEndOfFile(hFile);
-		
-		CloseHandle(hFile);
-		LogWrite("[Uplay Emu] Wrote %lu bytes", written);
+	// Verify slot is in write mode
+	if (slot->mode != 1) {
+		LogWrite("[Uplay Emu] SAVE_Write:  Slot not opened in write mode");
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
 	}
 	
-	// Set overlapped result
+	char savePath[MAX_PATH];
+	GetSaveFilePath(slotId, savePath);
+	
+	// Get actual buffer from pointer
+	void* actualBuffer = *(void**)bufferPtr;
+	if (!actualBuffer) {
+		LogWrite("[Uplay Emu] SAVE_Write: NULL buffer pointer");
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Verify file exists (should have been created in SAVE_Open)
+	if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
+		LogWrite("[Uplay Emu] SAVE_Write: Save file doesn't exist, creating it");
+		
+		// Create file with header
+		HANDLE hTemp = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
+			CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+		
+		if (hTemp == INVALID_HANDLE_VALUE) {
+			LogWrite("[Uplay Emu] SAVE_Write: Failed to create file (Error: %lu)", GetLastError());
+			FileRead* ovr = (FileRead*)overlapped;
+			ovr->addr1++;
+			ovr->addr2 = 1;
+			ovr->addr3 = 0;
+			return 0;
+		}
+		
+		BYTE header[SAVE_HEADER_SIZE] = {0};
+		DWORD written;
+		WriteFile(hTemp, header, SAVE_HEADER_SIZE, &written, NULL);
+		CloseHandle(hTemp);
+	}
+	
+	// Open file for writing with proper sharing mode
+	HANDLE hFile = CreateFileA(savePath, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	
+	if (hFile == INVALID_HANDLE_VALUE) {
+		LogWrite("[Uplay Emu] SAVE_Write: Failed to open file (Error: %lu)", GetLastError());
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Seek past header to data section
+	DWORD seekResult = SetFilePointer(hFile, SAVE_HEADER_SIZE, NULL, FILE_BEGIN);
+	if (seekResult == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+		LogWrite("[Uplay Emu] SAVE_Write: Failed to seek (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Write data
+	DWORD written = 0;
+	if (!WriteFile(hFile, actualBuffer, numBytes, &written, NULL)) {
+		LogWrite("[Uplay Emu] SAVE_Write: WriteFile failed (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Verify all bytes were written
+	if (written != numBytes) {
+		LogWrite("[Uplay Emu] SAVE_Write: Partial write (Requested: %lu, Written: %lu)", numBytes, written);
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Truncate file to exact size (header + data)
+	seekResult = SetFilePointer(hFile, SAVE_HEADER_SIZE + numBytes, NULL, FILE_BEGIN);
+	if (seekResult == INVALID_SET_FILE_POINTER && GetLastError() != NO_ERROR) {
+		LogWrite("[Uplay Emu] SAVE_Write: Failed to seek for truncate (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	if (!SetEndOfFile(hFile)) {
+		LogWrite("[Uplay Emu] SAVE_Write: Failed to truncate file (Error: %lu)", GetLastError());
+		CloseHandle(hFile);
+		FileRead* ovr = (FileRead*)overlapped;
+		ovr->addr1++;
+		ovr->addr2 = 1;
+		ovr->addr3 = 0;
+		return 0;
+	}
+	
+	// Flush to disk
+	FlushFileBuffers(hFile);
+	CloseHandle(hFile);
+	
+	LogWrite("[Uplay Emu] SAVE_Write: Successfully wrote %lu bytes", written);
+	
+	// Set overlapped result to success
 	FileRead* ovr = (FileRead*)overlapped;
 	ovr->addr1++;
 	ovr->addr2 = 1;
@@ -1458,6 +1809,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	
 	return 1;
 }
+
 UPLAY_EXPORT int UPLAY_STORE_Checkout()
 {
 	LOG_FUNC();
@@ -1700,8 +2052,6 @@ UPLAY_EXPORT int UPLAY_USER_IsConnected()
 }
 UPLAY_EXPORT int UPLAY_USER_IsInOfflineMode()
 {
-	LOG_FUNC();
-	LogWrite("[Uplay Emu] UPLAY_USER_IsInOfflineMode returning %d", Uplay_Configuration::Offline);
 	return Uplay_Configuration::Offline;
 }
 UPLAY_EXPORT int UPLAY_USER_IsOwned(int data)
@@ -1732,37 +2082,75 @@ UPLAY_EXPORT int UPLAY_USER_SetGameSession()
 
 UPLAY_EXPORT int UPLAY_Update()
 {
-    LOG_FUNC();
-
-    if (!g_SteamSyncEnabled || !g_SteamApiModule || !g_SteamUserStats)
+    if (!g_SteamSyncEnabled || !g_SteamApiModule)
         return 1;
 
-    if (g_RunCallbacks)
+    // Run callbacks to process async operations
+    if (g_RunCallbacks) {
         g_RunCallbacks();
+    }
 
-    if (!g_StatsReady && g_StatsRequested) {
-		if (g_GetNumAchievements) {
-			g_AchievementsCount = g_GetNumAchievements(g_SteamUserStats);
-		}
-
-		if (g_AchievementsCount > 0) {
-			g_StatsReady = true;
-			LogWrite("[Uplay Emu] Steam stats ready! Found %d achievements:", g_AchievementsCount);
+    // Check if stats are ready (poll-based since we can't easily use callbacks)
+    if (!g_StatsReady && g_StatsRequested && g_SteamUserStats) {
+        // Try to get achievement count - if > 0, stats are likely ready
+        if (g_GetNumAchievements) {
+            uint32_t count = g_GetNumAchievements(g_SteamUserStats);
             
-            if (g_GetAchievementName) {
-                for (int i = 0; i < g_AchievementsCount && i < 100; i++) {
-                    const char* name = g_GetAchievementName(g_SteamUserStats, i);
-                    if (name) {
-                        LogWrite("[Uplay Emu]   %d = %s", i, name);
+            if (count > 0) {
+                g_AchievementsCount = (int)count;
+                g_StatsReady = true;
+                
+                LogWrite("[Uplay Emu] Steam stats ready! Found %d achievements:", g_AchievementsCount);
+                
+                // List all Steam achievements for easy mapping
+                if (g_GetAchievementName) {
+                    for (uint32_t i = 0; i < count && i < 200; i++) {
+                        const char* name = g_GetAchievementName(g_SteamUserStats, i);
+                        if (name && name[0]) {
+                            bool unlocked = false;
+                            if (g_GetAchievement) {
+                                g_GetAchievement(g_SteamUserStats, name, &unlocked);
+                            }
+                            LogWrite("[Uplay Emu]   [%u] %s %s", i, name, unlocked ? "(UNLOCKED)" : "");
+                        }
                     }
                 }
-                LogWrite("[Uplay Emu] Add these to achievements.ini [Mapping] section!");
+                
+                LogWrite("[Uplay Emu] Add mappings to achievements.ini:");
+                LogWrite("[Uplay Emu] [Mapping]");
+                LogWrite("[Uplay Emu] <uplay_id>=<steam_api_name>");
+                
+                ProcessPendingAchievements();
             }
-		}
-	}
+        }
+    }
 
     return 1;
 }
+
+void ProcessPendingAchievements() {
+    if (g_PendingAchievements.empty()) {
+        return;
+    }
+    
+    if (!g_StatsReady) {
+        LogWrite("[Uplay Emu] Cannot process pending achievements - stats not ready");
+        return;
+    }
+    
+    LogWrite("[Uplay Emu] Processing %zu pending achievements.. .", g_PendingAchievements.size());
+    
+    std::vector<DWORD> pending = std::move(g_PendingAchievements);
+    g_PendingAchievements.clear();
+    
+    for (DWORD achId : pending) {
+        LogWrite("[Uplay Emu] Processing queued achievement:  %lu", achId);
+        UnlockSteamAchievement(achId);
+    }
+    
+    LogWrite("[Uplay Emu] Finished processing pending achievements");
+}
+
 
 UPLAY_EXPORT int UPLAY_WIN_GetActions()
 {
