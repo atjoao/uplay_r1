@@ -129,6 +129,19 @@ struct UPLAY_ACH_Achievement
 };
 #pragma pack(pop)
 
+#pragma pack(push, 8)
+struct SaveGameEntry {
+    uint64_t id;
+    char* nameUtf8;
+    uint64_t size;
+};
+
+struct SaveListHeader {
+    uint64_t count;
+    void** entries;
+};
+#pragma pack(pop)
+
 struct AchievementListHeader {
     ULONG_PTR count;
     UPLAY_ACH_Achievement* achievements;
