@@ -242,8 +242,7 @@ void CreatePath(const char* Path)
 		int i = 0;
 		for (;;)
 		{
-			if (data[i] == NULL)
-				break;
+			if (!data[i]) break;
 
 			memcpy(&out[i], &data[i], 1);
 			if (out[i] == '\\')

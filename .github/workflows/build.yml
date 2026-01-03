@@ -29,18 +29,36 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Cache MSYS2
+      uses: actions/cache@v4
+      id: cache-msys2
+      with:
+        path: ${{ runner.temp }}/msys64
+        key: msys2-${{ matrix.msystem }}-${{ hashFiles('.github/workflows/build.yml') }}
+        restore-keys: |
+          msys2-${{ matrix.msystem }}-
+
     - name: Setup MSYS2
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ matrix.msystem }}
         install: mingw-w64-${{ matrix.arch == 'x64' && 'x86_64' || 'i686' }}-gcc make
-        update: true
+        update: ${{ steps.cache-msys2.outputs.cache-hit != 'true' }}
+        location: ${{ runner.temp }}
         
     - name: Build with Make
       shell: msys2 {0}
       run: make ARCH=${{ matrix.make_arch }}
-        
+
+    - name: Cache Ultimate ASI Loader
+      uses: actions/cache@v4
+      id: cache-asi-loader
+      with:
+        path: dinput8.dll
+        key: asi-loader-${{ matrix.arch }}-v1
+
     - name: Download Ultimate ASI Loader
+      if: steps.cache-asi-loader.outputs.cache-hit != 'true'
       run: |
         $asiLoaderUrl = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader${{ matrix.asi_loader_arch }}.zip"
         Invoke-WebRequest -Uri $asiLoaderUrl -OutFile "asi_loader.zip"
@@ -51,7 +69,17 @@ jobs:
         }
       shell: pwsh
 
+    - name: Cache licenses
+      uses: actions/cache@v4
+      id: cache-licenses
+      with:
+        path: |
+          LICENSE-ASI-Loader.txt
+          LICENSE-MinHook.txt
+        key: licenses-v1
+
     - name: Download licenses
+      if: steps.cache-licenses.outputs.cache-hit != 'true'
       run: |
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/refs/heads/master/license" -OutFile "LICENSE-ASI-Loader.txt"
         Invoke-WebRequest -Uri "https://raw.githubusercontent.com/TsudaKageyu/minhook/master/LICENSE.txt" -OutFile "LICENSE-MinHook.txt"
