@@ -1,4 +1,7 @@
 #include "pch.h"
+#include "steam_impl.h"
+#include "logging.h"
+
 #include <vector>
 #include <cstdint>
 #include <cstdio>
@@ -7,100 +10,6 @@
 #include <shlobj.h>
 
 #define UPLAY_EXPORT extern "C" __declspec(dllexport)
-
-static FILE* g_LogFile = NULL;
-static FILE* g_ConsoleOut = NULL;
-static bool g_LogInitialized = false;
-static bool g_LoggingEnabled = false;
-static bool g_ConsoleEnabled = false;
-static char g_LogPath[MAX_PATH] = {0};
-
-void ReadLoggingConfig()
-{
-	CHAR INI[MAX_PATH] = {0};
-	GetModuleFileNameA(UplayModule, INI, MAX_PATH);
-	char* p = strrchr(INI, '\\');
-	if (p) strcpy(p + 1, "Uplay.ini");
-	else strcpy(INI, "Uplay.ini");
-	
-	if (GetFileAttributesA(INI) != INVALID_FILE_ATTRIBUTES) {
-		g_LoggingEnabled = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
-		g_ConsoleEnabled = GetPrivateProfileIntA("Uplay", "EnableConsole", 0, INI) == TRUE;
-	}
-}
-
-void InitConsole()
-{
-	if (!g_ConsoleEnabled || g_ConsoleOut) return;
-	
-	if (AllocConsole()) {
-		SetConsoleTitleA("Uplay Emu Console");
-		
-		freopen_s(&g_ConsoleOut, "CONOUT$", "w", stdout);
-		
-		HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-	}
-}
-
-void InitLog()
-{
-	if (!g_LogInitialized)
-	{
-		g_LogInitialized = true;
-		
-		if (!g_LoggingEnabled && !g_ConsoleEnabled) {
-			ReadLoggingConfig();
-		}
-		
-		if (g_ConsoleEnabled) {
-			InitConsole();
-		}
-		
-		if (!g_LoggingEnabled) return;
-		
-		GetModuleFileNameA(UplayModule, g_LogPath, MAX_PATH);
-		char* p = strrchr(g_LogPath, '\\');
-		if (p) strcpy(p + 1, "uplay_emu.log");
-		else strcpy(g_LogPath, "uplay_emu.log");
-		
-		g_LogFile = fopen(g_LogPath, "w+");
-		if (g_LogFile) {
-			time_t now = time(NULL);
-			struct tm* t = localtime(&now);
-			fflush(g_LogFile);
-		}
-	}
-}
-
-void LogWrite(const char* format, ...)
-{
-	if (!g_LogFile && !g_ConsoleOut) return;
-	
-	// Timestamp
-	time_t now = time(NULL);
-	struct tm* t = localtime(&now);
-	char timestamp[32];
-	sprintf(timestamp, "[%02d:%02d:%02d] ", t->tm_hour, t->tm_min, t->tm_sec);
-	
-	// Format message
-	char buffer[2048];
-	va_list args;
-	va_start(args, format);
-	vsnprintf(buffer, sizeof(buffer), format, args);
-	va_end(args);
-
-	if (g_LogFile) {
-		fprintf(g_LogFile, "%s%s\n", timestamp, buffer);
-		fflush(g_LogFile);
-	}
-	
-	if (g_ConsoleOut) {
-		printf("%s%s\n", timestamp, buffer);
-	}
-}
-
-#define LOG_FUNC() do { InitLog(); if (g_LogFile || g_ConsoleOut) LogWrite("[Uplay Emu] %s called", __FUNCTION__); } while(0)
-
 #define SAVE_HEADER_SIZE 552
 
 struct SaveSlot {
@@ -237,6 +146,8 @@ namespace Uplay_Configuration
 	bool logging = false;
 	bool friends = false;
 	bool party = false;
+	bool enableSteam = false;
+	uint32_t steamId = 0;
 
 	int cdkey1 = 0;
 	int cdkey2 = 0;
@@ -1425,6 +1336,7 @@ UPLAY_EXPORT int UPLAY_SetLanguage(const char* language)
 	strcpy(Uplay_Configuration::GameLanguage, language);
 	return 1;
 }
+
 UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 {
 	LOG_FUNC();
@@ -1458,6 +1370,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "EnableConsole=0\n");
 			fprintf(iniFile, "\n; Enable Friends/Party features (0 = disabled, 1 = enabled, this is for returning values to the game in case of crashing)\nFriends=0\n");
 			fprintf(iniFile, "Party=0\n");
+			fprintf(iniFile, ";Steam integration\n[Steam]\nEnable=0\nId=0\n");
 
 			fclose(iniFile);
 		} else {
@@ -1468,7 +1381,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 	Uplay_Configuration::appowned = GetPrivateProfileIntA("Uplay", "IsAppOwned", 0, INI) == TRUE;		// Read ini informations
 	Uplay_Configuration::Offline = GetPrivateProfileIntA("Uplay", "UplayConnection", 0, INI) == TRUE;
 	Uplay_Configuration::logging = GetPrivateProfileIntA("Uplay", "Logging", 0, INI) == TRUE;
-	g_LoggingEnabled = Uplay_Configuration::logging;
+	SetLoggingEnabled(Uplay_Configuration::logging);
 	Uplay_Configuration::gameAppId = GetPrivateProfileIntA("Uplay", "AppId", 0, INI);
 	GetPrivateProfileStringA("Uplay", "Username", 0, Uplay_Configuration::UserName, 0x200, INI);
 	GetPrivateProfileStringA("Uplay", "Email", 0, Uplay_Configuration::UserEmail, 0x200, INI);
@@ -1479,9 +1392,16 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
 	Uplay_Configuration::friends = GetPrivateProfileIntA("Uplay", "Friends", 0, INI) == TRUE;
 	Uplay_Configuration::party = GetPrivateProfileIntA("Uplay", "Party", 0, INI) == TRUE;
+	Uplay_Configuration::enableSteam = GetPrivateProfileIntA("Steam", "Enable", 0, INI) == TRUE;
+	Uplay_Configuration::steamId = GetPrivateProfileIntA("Steam", "Id", 0, INI);
 
 	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
 	InitAchievementPath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
+
+	if (Uplay_Configuration::enableSteam && !IsSteamApiInitialized()) {
+		LogWrite("[Uplay Emu] Steam enabled, SteamId: %llu", Uplay_Configuration::steamId);
+		InitSteamApi();
+	}
 	
 	return 0;
 }
