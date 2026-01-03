@@ -516,7 +516,6 @@ UPLAY_EXPORT int UPLAY_GetLastError()
 }
 UPLAY_EXPORT int UPLAY_GetNextEvent()
 {
-	LOG_FUNC();
 	return 0;
 }
 UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
@@ -1743,7 +1742,6 @@ UPLAY_EXPORT int UPLAY_USER_SetGameSession()
 }
 UPLAY_EXPORT int UPLAY_Update()
 {
-	LOG_FUNC();
 	return 1;
 }
 UPLAY_EXPORT int UPLAY_WIN_GetActions()
