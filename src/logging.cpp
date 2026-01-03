@@ -1,6 +1,5 @@
 #include "logging.h"
 
-// Static logging state - internal to this module
 static FILE* g_LogFile = NULL;
 static FILE* g_ConsoleOut = NULL;
 static bool g_LogInitialized = false;
