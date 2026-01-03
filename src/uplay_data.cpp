@@ -1,3 +1,4 @@
+#define WIN32_LEAN_AND_MEAN
 #include "pch.h"
 #include <vector>
 #include <cstdint>
@@ -1553,7 +1554,7 @@ void InitSteamApi() {
 	// Set SteamAppId and SteamGameId environment variables if not already set
 	char envBuffer[64] = {0};
 	char appIdStr[32] = {0};
-	sprintf(appIdStr, "%u", Uplay_Configuration::gameAppId);
+	sprintf(appIdStr, "%u", Uplay_Configuration::steamId);
 	
 	if (GetEnvironmentVariableA("SteamAppId", envBuffer, sizeof(envBuffer)) == 0) {
 		SetEnvironmentVariableA("SteamAppId", appIdStr);
@@ -1661,7 +1662,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
 	Uplay_Configuration::friends = GetPrivateProfileIntA("Uplay", "Friends", 0, INI) == TRUE;
 	Uplay_Configuration::party = GetPrivateProfileIntA("Uplay", "Party", 0, INI) == TRUE;
-	
+
 	Uplay_Configuration::enableSteam = GetPrivateProfileIntA("Steam", "Enable", 0, INI) == TRUE;
 	Uplay_Configuration::steamId = GetPrivateProfileIntA("Steam", "Id", 0, INI);
 

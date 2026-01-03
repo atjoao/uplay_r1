@@ -12,7 +12,7 @@ endif
 
 # Compiler settings
 CXX = g++
-CXXFLAGS = -shared -static
+CXXFLAGS = -shared -static -o3 
 INCLUDES = -I src -I src/minhook/include
 
 # Output files
