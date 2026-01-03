@@ -311,7 +311,6 @@ void InitSteamApi() {
 
 	// once loaded, get steam exports to use later...
     g_SteamApiInitialized = true;
-    InitSteamUserStats();
 	
 }
 
@@ -320,10 +319,6 @@ void RunCallbacks() {
         pfn_RunCallbacks();
     }
 }
-
-// ============================================================================
-// Achievement ID to Name Mapping
-// ============================================================================
 
 struct AchievementMapping {
     DWORD uplayId;

@@ -21,7 +21,7 @@ ASI_FILE = uplay_asi$(SUFFIX).asi
 STANDALONE = uplay_r1_loader$(SUFFIX).dll
 
 # Source files
-EMU_SOURCES = src/dllmain.cpp src/pch.cpp src/uplay_data.cpp
+EMU_SOURCES = src/dllmain.cpp src/pch.cpp src/uplay_data.cpp src/logging.cpp src/steam_impl.cpp
 ASI_SOURCES = src/uplay_hook.cpp \
               src/minhook/src/hook.c \
               src/minhook/src/buffer.c \
