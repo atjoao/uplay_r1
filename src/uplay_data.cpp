@@ -136,18 +136,33 @@ struct UPLAY_ACH_Achievement
 };
 #pragma pack(pop)
 
-#pragma pack(push, 8)
-struct SaveGameEntry {
-    uint64_t id;
-    char* nameUtf8;
-    uint64_t size;
-};
+#ifdef _WIN64
+	#pragma pack(push, 8)
+	struct SaveGameEntry {
+		uint64_t id;
+		char* nameUtf8;
+		uint64_t size;
+	};
 
-struct SaveListHeader {
-    uint64_t count;
-    void** entries;
-};
-#pragma pack(pop)
+	struct SaveListHeader {
+		uint64_t count;
+		void** entries;
+	};
+	#pragma pack(pop)
+#else
+	#pragma pack(push, 4)
+	struct SaveGameEntry {
+		uint32_t id;            // 4 bytes - slot ID
+		char* nameUtf8;         // 4 bytes on x32 - name string
+		uint32_t size;          // 4 bytes - file size
+	};  // Total: 12 bytes
+
+	struct SaveListHeader {
+		uint32_t count;         // 4 bytes
+		void** entries;         // 4 bytes on x32
+	};  // Total: 8 bytes on x32
+	#pragma pack(pop)
+#endif
 
 struct AchievementListHeader {
     ULONG_PTR count;
@@ -528,7 +543,6 @@ UPLAY_EXPORT int UPLAY_GetNextEvent()
 }
 UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
 {
-	LOG_FUNC();
 	Overmapped* ovr = (Overmapped*)buf1;
 	if (!ovr->f4) {
 		return 0;
@@ -540,7 +554,6 @@ UPLAY_EXPORT int UPLAY_GetOverlappedOperationResult(void* buf1, int* buf2)
 }
 UPLAY_EXPORT int UPLAY_HasOverlappedOperationCompleted(void* buf1)
 {
-	LOG_FUNC();
 	Overmapped* ovr = (Overmapped*)buf1;
 	return ovr->f4;
 }
@@ -993,151 +1006,108 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 
 UPLAY_EXPORT int UPLAY_SAVE_GetSavegames(void* outListPtr, void* overlapped)
 {
-    LOG_FUNC();    
-    // Find all . save files
-    char searchPath[MAX_PATH];
-    sprintf(searchPath, "%s\\*.save", g_SavePath);
-    WIN32_FIND_DATAA fd;
-    HANDLE hFind = FindFirstFileA(searchPath, &fd);
-    // Count files
-    DWORD fileCount = 0;
-    if (hFind != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-                fileCount++;
-        } while (FindNextFileA(hFind, &fd));
-        FindClose(hFind);
-    }
-    
-    LogWrite("[Uplay Emu] Found %lu save files", fileCount);
-    
-    // Allocate list header
-    SaveListHeader* listHeader = (SaveListHeader*)VirtualAlloc(NULL, sizeof(SaveListHeader), 
-                                                                MEM_COMMIT, PAGE_READWRITE);
-    if (!listHeader) {
-        LogWrite("[Uplay Emu] ERROR: Failed to allocate list header");
-        FileRead* ovr = (FileRead*)overlapped;
-        ovr->addr1++;
-        ovr->addr2 = 1;
-        ovr->addr3 = 0;
-        return 0;
-    }
-    
-    listHeader->count = (uint64_t)fileCount;
-    
-    // Allocate entries array (array of pointers)
-    void** entriesArray = (void**)VirtualAlloc(NULL, sizeof(void*) * fileCount, 
-                                                MEM_COMMIT, PAGE_READWRITE);
-    if (!entriesArray) {
-        LogWrite("[Uplay Emu] ERROR: Failed to allocate entries array");
-        VirtualFree(listHeader, 0, MEM_RELEASE);
-        FileRead* ovr = (FileRead*)overlapped;
-        ovr->addr1++;
-        ovr->addr2 = 1;
-        ovr->addr3 = 0;
-        return 0;
-    }
-    
-    listHeader->entries = entriesArray;
-    
-    // Fill entries
-    hFind = FindFirstFileA(searchPath, &fd);
-    DWORD entryIndex = 0;
-    
-    if (hFind != INVALID_HANDLE_VALUE) {
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                continue;
-            
-            // Parse slot ID from filename
-            uint64_t slotId = strtoull(fd.cFileName, NULL, 10);
-            
-            // Build full path
-            char fullPath[MAX_PATH];
-            sprintf(fullPath, "%s\\%s", g_SavePath, fd.cFileName);
-            
-            // Open file to read header and get size
-            HANDLE hFile = CreateFileA(fullPath, GENERIC_READ, FILE_SHARE_READ, NULL,
-                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-            
-            uint64_t fileSize = 0;
-            char saveName[256] = "Unnamed";
-            
-            if (hFile != INVALID_HANDLE_VALUE) {
-                // Get total file size
-                DWORD fileSizeLow = GetFileSize(hFile, NULL);
-                
-                // Calculate data size (subtract header)
-                if (fileSizeLow >= SAVE_HEADER_SIZE) {
-                    fileSize = (uint64_t)(fileSizeLow - SAVE_HEADER_SIZE);
-                } else {
-                    fileSize = 0;
-                }
-                
-                // Read save name from header (if file is large enough)
-                if (fileSizeLow >= SAVE_HEADER_SIZE) {
-                    BYTE header[SAVE_HEADER_SIZE];
-                    DWORD bytesRead;
-                    
-                    if (ReadFile(hFile, header, SAVE_HEADER_SIZE, &bytesRead, NULL) && 
-                        bytesRead >= SAVE_HEADER_SIZE) {
-                        // Extract Unicode name from offset 40
-                        int nameIdx = 0;
-                        for (int i = 40; i < SAVE_HEADER_SIZE - 1 && nameIdx < 255; i += 2) {
-                            if (header[i] == 0 && header[i+1] == 0) 
-                                break;
-                            saveName[nameIdx++] = (char)header[i];
-                        }
-                        saveName[nameIdx] = 0;
-                    }
-                }
-                
-                CloseHandle(hFile);
-            }
-            
-            // Allocate entry
-            SaveGameEntry* entry = (SaveGameEntry*)VirtualAlloc(NULL, sizeof(SaveGameEntry), 
-                                                                  MEM_COMMIT, PAGE_READWRITE);
-            if (!entry) {
-                LogWrite("[Uplay Emu] ERROR: Failed to allocate entry %lu", entryIndex);
-                continue;
-            }
-            
-            // Allocate and copy name
-            char* nameBuffer = (char*)VirtualAlloc(NULL, 256, MEM_COMMIT, PAGE_READWRITE);
-            if (nameBuffer) {
-                strcpy(nameBuffer, saveName);
-            }
-            
-            // Fill entry
-            entry->id = slotId;
-            entry->nameUtf8 = nameBuffer;
-            entry->size = fileSize;
-            
-            // Store entry pointer in array
-            entriesArray[entryIndex++] = entry;
-            
-            LogWrite("[Uplay Emu]   [%lu] Slot=%llu, Name='%s', Size=%llu bytes",
-                     entryIndex - 1, entry->id, entry->nameUtf8, entry->size);
-            
-        } while (FindNextFileA(hFind, &fd));
-        FindClose(hFind);
-    }
-    
-    // Write list pointer to output (write the ADDRESS of listHeader)
-    memcpy(outListPtr, &listHeader, sizeof(void*));
-    
-    LogWrite("[Uplay Emu] List header at:  0x%p", listHeader);
-    LogWrite("[Uplay Emu] Entries array at: 0x%p", entriesArray);
-    LogWrite("[Uplay Emu] Returning pointer to outListPtr:  0x%p", outListPtr);
-    
-    // Set overlapped result
-    FileRead* ovr = (FileRead*)overlapped;
-    ovr->addr1++;
-    ovr->addr2 = 1;
-    ovr->addr3 = 0;
-    
-    return 1;
+	LOG_FUNC();
+	
+	// Find all .save files in save directory
+	char searchPath[MAX_PATH];
+	sprintf(searchPath, "%s\\*.save", g_SavePath);
+	
+	// Count files first
+	WIN32_FIND_DATAA fd;
+	HANDLE hFind = FindFirstFileA(searchPath, &fd);
+	DWORD fileCount = 0;
+	
+	if (hFind != INVALID_HANDLE_VALUE) {
+		do {
+			if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				fileCount++;
+		} while (FindNextFileA(hFind, &fd));
+		FindClose(hFind);
+	}
+	
+	LogWrite("[Uplay Emu] Found %lu save files", fileCount);
+	
+	// Allocate list structure using ULONG_PTR for cross-platform compatibility
+	void* listBuffer = VirtualAlloc(NULL, 0x1000, MEM_COMMIT, PAGE_READWRITE);
+	void* entriesBuffer = VirtualAlloc(NULL, 0x10000, MEM_COMMIT, PAGE_READWRITE);
+	
+	ULONG_PTR* listHeader = (ULONG_PTR*)listBuffer;
+	listHeader[0] = fileCount;  // count
+	listHeader[1] = (ULONG_PTR)entriesBuffer;  // pointer to entries
+	
+	// Fill entries
+	hFind = FindFirstFileA(searchPath, &fd);
+	DWORD entryIndex = 0;
+	
+	if (hFind != INVALID_HANDLE_VALUE) {
+		do {
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+				continue;
+			
+			// Parse slot ID from filename
+			DWORD slotId = strtoul(fd.cFileName, NULL, 10);
+			
+			// Build full path
+			char fullPath[MAX_PATH];
+			sprintf(fullPath, "%s\\%s", g_SavePath, fd.cFileName);
+			
+			// Get file size
+			HANDLE hFile = CreateFileA(fullPath, GENERIC_READ, FILE_SHARE_READ, NULL,
+				OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			DWORD fileSize = 0;
+			char saveName[256] = "Unnamed";
+			
+			if (hFile != INVALID_HANDLE_VALUE) {
+				fileSize = GetFileSize(hFile, NULL);
+				if (fileSize > SAVE_HEADER_SIZE)
+					fileSize -= SAVE_HEADER_SIZE;
+				else
+					fileSize = 0;
+				
+				// Read save name from header
+				BYTE header[SAVE_HEADER_SIZE];
+				DWORD bytesRead;
+				if (ReadFile(hFile, header, SAVE_HEADER_SIZE, &bytesRead, NULL) && bytesRead >= SAVE_HEADER_SIZE) {
+					// Extract Unicode name from offset 40
+					int nameIdx = 0;
+					for (int i = 40; i < SAVE_HEADER_SIZE - 1 && nameIdx < 255; i += 2) {
+						if (header[i] == 0 && header[i+1] == 0) break;
+						saveName[nameIdx++] = (char)header[i];
+					}
+					saveName[nameIdx] = 0;
+				}
+				CloseHandle(hFile);
+			}
+			
+			// Allocate entry structure using ULONG_PTR for proper alignment
+			void* entryBuffer = VirtualAlloc(NULL, 0x100, MEM_COMMIT, PAGE_READWRITE);
+			
+			// Entry structure: { ULONG_PTR id, ULONG_PTR namePtr, ULONG_PTR size }
+			ULONG_PTR* entry = (ULONG_PTR*)entryBuffer;
+			char* nameBuffer = (char*)VirtualAlloc(NULL, 0x200, MEM_COMMIT, PAGE_READWRITE);
+			strcpy(nameBuffer, saveName);
+			
+			entry[0] = slotId;              // id
+			entry[1] = (ULONG_PTR)nameBuffer; // name pointer
+			entry[2] = fileSize;            // size
+			
+			// Store entry pointer in entries array
+			((void**)entriesBuffer)[entryIndex++] = entryBuffer;
+			
+		} while (FindNextFileA(hFind, &fd));
+		FindClose(hFind);
+	}
+	
+	// Write list pointer
+	memcpy(outListPtr, &listBuffer, sizeof(void*));
+	
+	// Set overlapped result
+	FileRead* ovr = (FileRead*)overlapped;
+	ovr->addr1++;
+	ovr->addr2 = 1;
+	ovr->addr3 = 0;
+	
+	return 1;
 }
 
 UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void* overlapped)
@@ -1146,7 +1116,6 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 	LogWrite("[Uplay Emu] SAVE_Open: slotId=%lu, mode=%lu", slotId, mode);
 	
 	if (slotId >= 256) {
-		LogWrite("[Uplay Emu] SAVE_Open: Invalid slot ID");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
 		ovr->addr2 = 1;
@@ -1168,7 +1137,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 		HANDLE hFile = CreateFileA(savePath, GENERIC_READ, FILE_SHARE_READ, NULL,
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) {
-			LogWrite("[Uplay Emu] File not found: %s (Error: %lu)", savePath, GetLastError());
+			LogWrite("[Uplay Emu] File not found: %s", savePath);
 			slot->inUse = false;
 			FileRead* ovr = (FileRead*)overlapped;
 			ovr->addr1++;
@@ -1177,45 +1146,18 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 			return 0;
 		}
 		slot->fileHandle = hFile;
-	} else { // Write mode (mode == 1)
-		// Create file with proper header if it doesn't exist
+	} else { // Write mode
+		// Create file with header if it doesn't exist
 		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
-			LogWrite("[Uplay Emu] Creating new save file: %s", savePath);
-			
 			HANDLE hFile = CreateFileA(savePath, GENERIC_WRITE, 0, NULL,
 				CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-			
-			if (hFile == INVALID_HANDLE_VALUE) {
-				LogWrite("[Uplay Emu] Failed to create file (Error: %lu)", GetLastError());
-				slot->inUse = false;
-				FileRead* ovr = (FileRead*)overlapped;
-				ovr->addr1++;
-				ovr->addr2 = 1;
-				ovr->addr3 = 0;
-				return 0;
-			}
-			
-			// Initialize header with zeros
-			BYTE header[SAVE_HEADER_SIZE] = {0};
-			DWORD written = 0;
-			
-			if (! WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL) || written != SAVE_HEADER_SIZE) {
-				LogWrite("[Uplay Emu] Failed to write header (Error: %lu, Written: %lu)", GetLastError(), written);
+			if (hFile != INVALID_HANDLE_VALUE) {
+				BYTE header[SAVE_HEADER_SIZE] = {0};
+				DWORD written;
+				WriteFile(hFile, header, SAVE_HEADER_SIZE, &written, NULL);
 				CloseHandle(hFile);
-				DeleteFileA(savePath); // Clean up incomplete file
-				slot->inUse = false;
-				FileRead* ovr = (FileRead*)overlapped;
-				ovr->addr1++;
-				ovr->addr2 = 1;
-				ovr->addr3 = 0;
-				return 0;
 			}
-			
-			CloseHandle(hFile);
-			LogWrite("[Uplay Emu] Created file with header, size: %lu bytes", written);
 		}
-		
-		// Don't keep file handle open in write mode
 		slot->fileHandle = NULL;
 	}
 	
@@ -1265,43 +1207,11 @@ UPLAY_EXPORT int UPLAY_SAVE_Read(DWORD slotId, DWORD numBytes, DWORD offset, voi
 
 UPLAY_EXPORT int UPLAY_SAVE_ReleaseGameList(void* listPointer)
 {
-    LOG_FUNC();
-    LogWrite("[Uplay Emu] Releasing game list at: 0x%p", listPointer);
-    
-    if (!listPointer) {
-        return 1;
-    }
-    
-    // Read the list header pointer
-    SaveListHeader* listHeader = *(SaveListHeader**)listPointer;
-    if (!listHeader) {
-        return 1;
-    }
-    
-    LogWrite("[Uplay Emu] List header at: 0x%p, count=%llu", listHeader, listHeader->count);
-    
-    // Free each entry
-    if (listHeader->entries) {
-        for (uint64_t i = 0; i < listHeader->count; i++) {
-            SaveGameEntry* entry = (SaveGameEntry*)listHeader->entries[i];
-            if (entry) {
-                // Free name string
-                if (entry->nameUtf8) {
-                    VirtualFree(entry->nameUtf8, 0, MEM_RELEASE);
-                }
-                // Free entry struct
-                VirtualFree(entry, 0, MEM_RELEASE);
-            }
-        }
-        // Free entries array
-        VirtualFree(listHeader->entries, 0, MEM_RELEASE);
-    }
-    
-    // Free list header
-    VirtualFree(listHeader, 0, MEM_RELEASE);
-    
-    LogWrite("[Uplay Emu] Game list freed");
-    return 1;
+	LOG_FUNC();
+	if (listPointer) {
+		VirtualFree(listPointer, 0, MEM_RELEASE);
+	}
+	return 1;
 }
 
 UPLAY_EXPORT int UPLAY_SAVE_Remove(DWORD slotId, void* overlapped)

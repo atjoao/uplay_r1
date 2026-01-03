@@ -11,7 +11,7 @@ else
 endif
 
 # Compiler settings
-CXX = g++
+CXX = clang++
 CXXFLAGS = -shared -static
 INCLUDES = -I src -I src/minhook/include
 

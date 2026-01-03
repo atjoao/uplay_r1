@@ -33,7 +33,7 @@ jobs:
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ matrix.msystem }}
-        install: mingw-w64-${{ matrix.arch == 'x64' && 'x86_64' || 'i686' }}-gcc make
+        install: mingw-w64-${{ matrix.arch == 'x64' && 'x86_64' || 'i686' }}-clang make
         cache: true
         
     - name: Build with Make
