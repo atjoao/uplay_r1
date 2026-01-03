@@ -15,6 +15,13 @@ static bool g_LoggingEnabled = false;
 static bool g_ConsoleEnabled = false;
 static char g_LogPath[MAX_PATH] = {0};
 
+// steam api vars
+static bool g_SteamApiInitialized = false;
+static HMODULE g_SteamApiModule = nullptr;
+static HMODULE g_SteamClientModule = nullptr;
+
+void InitSteamApi();
+
 void ReadLoggingConfig()
 {
 	CHAR INI[MAX_PATH] = {0};
@@ -222,6 +229,8 @@ namespace Uplay_Configuration
 	bool logging = false;
 	bool friends = false;
 	bool party = false;
+	bool enableSteam = false;
+	uint32_t steamId = 0;
 
 	int cdkey1 = 0;
 	int cdkey2 = 0;
@@ -1515,6 +1524,88 @@ UPLAY_EXPORT int UPLAY_SetLanguage(const char* language)
 	strcpy(Uplay_Configuration::GameLanguage, language);
 	return 1;
 }
+
+void InitSteamApi() {
+    if (g_SteamApiInitialized) return;
+    
+    #ifdef _WIN64
+        const char* steamApiName = "steam_api64.dll";
+		const char* steamClientName = "steamclient64.dll";
+    #else
+        const char* steamApiName = "steam_api.dll";
+		const char* steamClientName = "steamclient.dll";
+    #endif
+    
+    g_SteamApiModule = GetModuleHandleA(steamApiName);
+	g_SteamClientModule = GetModuleHandleA(steamClientName);
+    if (g_SteamApiModule || g_SteamClientModule) {
+        LogWrite("[Uplay Emu] steam_api already loaded at 0x%p", g_SteamApiModule);
+    }
+
+	if (!g_SteamApiModule) {
+		g_SteamApiModule = LoadLibraryA(steamApiName);
+		g_SteamClientModule = LoadLibraryA(steamClientName);
+		if (g_SteamApiModule && g_SteamClientModule) {
+			LogWrite("[Uplay Emu] Loaded steam_api globally:  %s", steamApiName);
+		}
+	}
+
+	// Set SteamAppId and SteamGameId environment variables if not already set
+	char envBuffer[64] = {0};
+	char appIdStr[32] = {0};
+	sprintf(appIdStr, "%u", Uplay_Configuration::gameAppId);
+	
+	if (GetEnvironmentVariableA("SteamAppId", envBuffer, sizeof(envBuffer)) == 0) {
+		SetEnvironmentVariableA("SteamAppId", appIdStr);
+		LogWrite("[Uplay Emu] Set SteamAppId=%s", appIdStr);
+	} else {
+		LogWrite("[Uplay Emu] SteamAppId already set: %s", envBuffer);
+	}
+	
+	if (GetEnvironmentVariableA("SteamGameId", envBuffer, sizeof(envBuffer)) == 0) {
+		SetEnvironmentVariableA("SteamGameId", appIdStr);
+		LogWrite("[Uplay Emu] Set SteamGameId=%s", appIdStr);
+	} else {
+		LogWrite("[Uplay Emu] SteamGameId already set: %s", envBuffer);
+	}
+    
+    typedef int (__cdecl *SteamAPI_InitFlat_t)(char* pszErrMsg);
+    typedef bool (__cdecl *SteamAPI_Init_t)();
+    
+    SteamAPI_InitFlat_t SteamAPI_InitFlat = (SteamAPI_InitFlat_t)GetProcAddress(g_SteamApiModule, "SteamAPI_InitFlat");
+    SteamAPI_Init_t SteamAPI_Init = (SteamAPI_Init_t)GetProcAddress(g_SteamApiModule, "SteamAPI_Init");
+    
+    bool initSuccess = false;
+    
+    if (SteamAPI_InitFlat) {
+        LogWrite("[Uplay Emu] Found init function:  SteamAPI_InitFlat");
+        char errBuffer[1024] = {0};
+        int res = SteamAPI_InitFlat(errBuffer);
+        if (res == 0) {
+            LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
+            initSuccess = true;
+        } else {
+            LogWrite("[Uplay Emu] SteamAPI_InitFlat() failed with error %d:  %s", res, 
+                     errBuffer[0] ? errBuffer : "(no message)");
+        }
+	}
+		
+    // Manual dispatch init (optional)
+    typedef void (__cdecl *SteamAPI_ManualDispatch_Init_t)();
+    SteamAPI_ManualDispatch_Init_t SteamAPI_ManualDispatch_Init = 
+        (SteamAPI_ManualDispatch_Init_t)GetProcAddress(g_SteamApiModule, "SteamAPI_ManualDispatch_Init");
+    if (SteamAPI_ManualDispatch_Init) {
+        LogWrite("[Uplay Emu] Calling SteamAPI_ManualDispatch_Init");
+        SteamAPI_ManualDispatch_Init();
+    }
+
+    LogWrite("[Uplay Emu] Steam API initialized successfully");
+
+	// once loaded, get steam exports to use later...
+    g_SteamApiInitialized = true;
+	
+}
+
 UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 {
 	LOG_FUNC();
@@ -1548,6 +1639,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "EnableConsole=0\n");
 			fprintf(iniFile, "\n; Enable Friends/Party features (0 = disabled, 1 = enabled, this is for returning values to the game in case of crashing)\nFriends=0\n");
 			fprintf(iniFile, "Party=0\n");
+			fprintf(iniFile, ";Steam integration\n[Steam]\nEnable=0\nId=0\n");
 
 			fclose(iniFile);
 		} else {
@@ -1569,9 +1661,17 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 	GetPrivateProfileStringA("Uplay", "TickedId", 0, Uplay_Configuration::TickedId, 0x200, INI);
 	Uplay_Configuration::friends = GetPrivateProfileIntA("Uplay", "Friends", 0, INI) == TRUE;
 	Uplay_Configuration::party = GetPrivateProfileIntA("Uplay", "Party", 0, INI) == TRUE;
+	
+	Uplay_Configuration::enableSteam = GetPrivateProfileIntA("Steam", "Enable", 0, INI) == TRUE;
+	Uplay_Configuration::steamId = GetPrivateProfileIntA("Steam", "Id", 0, INI);
 
 	InitSavePath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
 	InitAchievementPath(Uplay_Configuration::UserName, Uplay_Configuration::gameAppId);
+
+	if (Uplay_Configuration::enableSteam && !g_SteamApiInitialized) {
+		LogWrite("[Uplay Emu] Steam enabled, SteamId: %llu", Uplay_Configuration::steamId);
+		InitSteamApi();
+	}
 	
 	return 0;
 }
