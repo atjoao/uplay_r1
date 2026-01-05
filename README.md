@@ -38,6 +38,8 @@ Saves and Achievements using the emulator will be saved on
 `%APPDATA%\UplayEmu\{userId}\{appId}\<respective folder>` with fallback to game folder
 
 When a game triggers an achievement it will create <id>.ini in achievement folder without name and description.
+Ubisoft achievements at least the ones that use R1_loader are locked server side.
+You need to unlock that achievement on ubisoft connect if you want it on steam
 
 Uplay.ini will be on the game folder and created upon opening the game.
 
