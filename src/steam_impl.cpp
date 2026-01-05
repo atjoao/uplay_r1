@@ -19,22 +19,18 @@ void InitSteamApi() {
 
 #ifdef _WIN64
   const char *steamApiName = "steam_api64.dll";
-  const char *steamClientName = "steamclient64.dll";
 #else
   const char *steamApiName = "steam_api.dll";
-  const char *steamClientName = "steamclient.dll";
 #endif
 
   g_SteamApiModule = GetModuleHandleA(steamApiName);
-  g_SteamClientModule = GetModuleHandleA(steamClientName);
-  if (g_SteamApiModule || g_SteamClientModule) {
+  if (g_SteamApiModule) {
     LogWrite("[Uplay Emu] steam_api already loaded at 0x%p", g_SteamApiModule);
   }
 
   if (!g_SteamApiModule) {
     g_SteamApiModule = LoadLibraryA(steamApiName);
-    g_SteamClientModule = LoadLibraryA(steamClientName);
-    if (g_SteamApiModule && g_SteamClientModule) {
+    if (g_SteamApiModule) {
       LogWrite("[Uplay Emu] Loaded steam_api globally:  %s", steamApiName);
     }
   }
