@@ -40,6 +40,23 @@ jobs:
       shell: msys2 {0}
       run: make ARCH=${{ matrix.make_arch }}
 
+    - name: Cache Steamworks SDK
+      uses: actions/cache@v4
+      id: cache-steamworks
+      with:
+        path: steam_api${{ matrix.suffix }}.dll
+        key: steamworks-sdk-${{ matrix.arch }}-v1
+
+    - name: Download Steamworks SDK
+      if: steps.cache-steamworks.outputs.cache-hit != 'true'
+      run: |
+        if ("${{ matrix.arch }}" -eq "x64") {
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/win64/steam_api64.dll" -OutFile "steam_api64.dll"
+        } else {
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/steam_api.dll" -OutFile "steam_api.dll"
+        }
+      shell: pwsh
+
     - name: Cache Ultimate ASI Loader
       uses: actions/cache@v4
       id: cache-asi-loader
@@ -77,7 +94,7 @@ jobs:
       
     - name: Create ASI zip
       run: |
-        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll", "LICENSE-ASI-Loader.txt", "LICENSE-MinHook.txt" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
+        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll", "steam_api${{ matrix.suffix }}.dll", "LICENSE-ASI-Loader.txt", "LICENSE-MinHook.txt" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
       shell: pwsh
         
     - name: Upload artifacts
@@ -121,13 +138,16 @@ jobs:
         body: |          
           **Build Date:** ${{ steps.release_info.outputs.date }}
           
+          > Note that steam_api.dll and steam_api64.dll are not required for the emu to work.
+          > Its just for steam hooking with the game, to get stuff like the overlay working.
+
           ### Downloads
           
           **ASI Version (for games with DLL checks):**
           | File | Description |
           |------|-------------|
-          | `uplay_emu_asi_x64.zip` | 64-bit (emu.upc_r1_loader64.dll + uplay_asi64.asi + dinput8.dll) |
-          | `uplay_emu_asi_x86.zip` | 32-bit (emu.upc_r1_loader.dll + uplay_asi.asi + dinput8.dll) |
+          | `uplay_emu_asi_x64.zip` | 64-bit (emu.upc_r1_loader64.dll + uplay_asi64.asi + dinput8.dll + steam_api64.dll ) |
+          | `uplay_emu_asi_x86.zip` | 32-bit (emu.upc_r1_loader.dll + uplay_asi.asi + dinput8.dll + steam_api.dll) |
           
           **Standalone (for games without DLL checks):**
           | File | Description |
