@@ -6,9 +6,9 @@ This is a fork [Rat431/Mini_Uplay_API_Emu](https://github.com/Rat431/Mini_Uplay_
 
 ## Instructions
 
-**64-bit games:** Use `uplay_asi64.asi + emu.upc_r1_loader64.dll + dinput8.dll` (for games with DLL check) or download `uplay_r1_loader64.dll` and rename to your dll name.
+**64-bit games:** Use `uplay_asi64.asi + emu.upc_r1_loader64.dll + dinput8.dll + steam_api64.dll (only needed for steam hooking)` (for games with DLL check) or download `uplay_r1_loader64.dll` and rename to your dll name.
 
-**32-bit games:** Use `uplay_asi.asi + emu.upc_r1_loader.dll + dinput8.dll` (for games with DLL check) or download `uplay_r1_loader.dll` and rename to your dll name.
+**32-bit games:** Use `uplay_asi.asi + emu.upc_r1_loader.dll + dinput8.dll + steam_api.dll (only needed for steam hooking)` (for games with DLL check) or download `uplay_r1_loader.dll` and rename to your dll name.
 
 ## Compile
 
