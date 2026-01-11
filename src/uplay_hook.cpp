@@ -17,9 +17,12 @@
     #define EMULATOR_DLL_NAME "emu.upc_r1_loader.dll"
 #endif
 
+// known dll names
 static const char* g_TargetDlls[] = {
     "uplay_r1_loader64.dll",
     "uplay_r1_loader.dll",
+    "upc_r1_loader.dll",
+    "upc_r1_loader64.dll",
     "uplay_r164.dll",
     "uplay_r1.dll",
     nullptr

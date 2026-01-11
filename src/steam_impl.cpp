@@ -31,11 +31,10 @@ void InitSteamApi() {
   if (!g_SteamApiModule) {
     g_SteamApiModule = LoadLibraryA(steamApiName);
     if (g_SteamApiModule) {
-      LogWrite("[Uplay Emu] Loaded steam_api globally:  %s", steamApiName);
+      LogWrite("[Uplay Emu] Loaded steam_api: %s", steamApiName);
     }
   }
 
-  // Set SteamAppId and SteamGameId environment variables if not already set
   char envBuffer[64] = {0};
   char appIdStr[32] = {0};
   sprintf(appIdStr, "%u", Uplay_Configuration::steamId);
@@ -68,25 +67,8 @@ void InitSteamApi() {
 
   if (SteamAPI_InitFlat) {
     LogWrite("[Uplay Emu] Found init function:  SteamAPI_InitFlat");
-    char errBuffer[1024] = {0};
-    int res = SteamAPI_InitFlat(errBuffer);
-    if (res == 0) {
-      LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
-      initSuccess = true;
-    } else {
-      LogWrite("[Uplay Emu] SteamAPI_InitFlat() failed with error %d:  %s", res,
-               errBuffer[0] ? errBuffer : "(no message)");
-    }
-  }
-
-  // Manual dispatch init (optional)
-  typedef void(__cdecl * SteamAPI_ManualDispatch_Init_t)();
-  SteamAPI_ManualDispatch_Init_t SteamAPI_ManualDispatch_Init =
-      (SteamAPI_ManualDispatch_Init_t)GetProcAddress(
-          g_SteamApiModule, "SteamAPI_ManualDispatch_Init");
-  if (SteamAPI_ManualDispatch_Init) {
-    LogWrite("[Uplay Emu] Calling SteamAPI_ManualDispatch_Init");
-    SteamAPI_ManualDispatch_Init();
+    int res = SteamAPI_InitFlat(nullptr);
+    LogWrite("[Uplay Emu] SteamAPI_InitFlat() succeeded");
   }
 
   LogWrite("[Uplay Emu] Steam API initialized successfully");
