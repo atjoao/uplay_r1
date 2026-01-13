@@ -3,6 +3,7 @@
 #include "logging.h"
 
 #include <vector>
+#include <map>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -20,7 +21,7 @@ struct SaveSlot {
     bool inUse;
 };
 
-static SaveSlot g_SaveSlots[256] = {0};
+static std::map<DWORD, SaveSlot> g_SaveSlots;
 static char g_SavePath[MAX_PATH] = {0};
 static bool g_SavePathInit = false;
 
@@ -68,7 +69,7 @@ struct UPLAY_ACH_Achievement
 
 struct AchievementListHeader {
     ULONG_PTR count;
-    UPLAY_ACH_Achievement* achievements;
+    void** achievements;  // Array of pointers to UPLAY_ACH_Achievement
 };
 
 // Forward declarations for achievement functions
@@ -246,9 +247,9 @@ UPLAY_EXPORT int UPLAY_ACH_GetAchievements(DWORD filter, const char* accountIdUt
 	g_AchievementListHeader->count = count;
 	
 	if (count > 0) {
-		// Allocate achievements array
-		g_AchievementList = (UPLAY_ACH_Achievement*)VirtualAlloc(NULL, sizeof(UPLAY_ACH_Achievement) * count, MEM_COMMIT, PAGE_READWRITE);
-		g_AchievementListHeader->achievements = g_AchievementList;
+		// Allocate array of pointers to achievements
+		void** entriesBuffer = (void**)VirtualAlloc(NULL, sizeof(void*) * count, MEM_COMMIT, PAGE_READWRITE);
+		g_AchievementListHeader->achievements = entriesBuffer;
 		
 		// Clear old strings
 		for (char* str : g_AchievementStrings) {
@@ -256,7 +257,13 @@ UPLAY_EXPORT int UPLAY_ACH_GetAchievements(DWORD filter, const char* accountIdUt
 		}
 		g_AchievementStrings.clear();
 		
-		// Fill achievements
+		// Free old achievement list if any
+		if (g_AchievementList) {
+			VirtualFree(g_AchievementList, 0, MEM_RELEASE);
+			g_AchievementList = nullptr;
+		}
+		
+		// Fill achievements - allocate each one individually
 		for (DWORD i = 0; i < count; i++) {
 			DWORD achId = achIds[i];
 			
@@ -266,6 +273,9 @@ UPLAY_EXPORT int UPLAY_ACH_GetAchievements(DWORD filter, const char* accountIdUt
 			
 			ReadAchievement(achId, name, desc, &earned);
 			
+			// Allocate achievement struct
+			UPLAY_ACH_Achievement* achEntry = (UPLAY_ACH_Achievement*)VirtualAlloc(NULL, sizeof(UPLAY_ACH_Achievement), MEM_COMMIT, PAGE_READWRITE);
+			
 			// Allocate and copy strings
 			char* nameCopy = (char*)VirtualAlloc(NULL, 256, MEM_COMMIT, PAGE_READWRITE);
 			char* descCopy = (char*)VirtualAlloc(NULL, 512, MEM_COMMIT, PAGE_READWRITE);
@@ -274,10 +284,13 @@ UPLAY_EXPORT int UPLAY_ACH_GetAchievements(DWORD filter, const char* accountIdUt
 			g_AchievementStrings.push_back(nameCopy);
 			g_AchievementStrings.push_back(descCopy);
 			
-			g_AchievementList[i].id = achId;
-			g_AchievementList[i].nameUtf8 = nameCopy;
-			g_AchievementList[i].descriptionUtf8 = descCopy;
-			g_AchievementList[i].earned = earned;
+			achEntry->id = achId;
+			achEntry->nameUtf8 = nameCopy;
+			achEntry->descriptionUtf8 = descCopy;
+			achEntry->earned = earned;
+			
+			// Store pointer to achievement in entries array
+			entriesBuffer[i] = achEntry;
 			
 			LogWrite("[Uplay Emu] Achievement %lu: %s (earned=%d)", achId, name, earned);
 		}
@@ -313,10 +326,15 @@ UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementList(void* list)
 	}
 	g_AchievementStrings.clear();
 	
-	// Free achievement array
-	if (g_AchievementList) {
-		VirtualFree(g_AchievementList, 0, MEM_RELEASE);
-		g_AchievementList = nullptr;
+	// Free individual achievement structs from the entries array
+	if (g_AchievementListHeader && g_AchievementListHeader->achievements) {
+		for (ULONG_PTR i = 0; i < g_AchievementListHeader->count; i++) {
+			if (g_AchievementListHeader->achievements[i]) {
+				VirtualFree(g_AchievementListHeader->achievements[i], 0, MEM_RELEASE);
+			}
+		}
+		VirtualFree(g_AchievementListHeader->achievements, 0, MEM_RELEASE);
+		g_AchievementListHeader->achievements = nullptr;
 	}
 	
 	// Free header
@@ -324,6 +342,8 @@ UPLAY_EXPORT int UPLAY_ACH_ReleaseAchievementList(void* list)
 		VirtualFree(g_AchievementListHeader, 0, MEM_RELEASE);
 		g_AchievementListHeader = nullptr;
 	}
+	
+	g_AchievementList = nullptr;
 	
 	return 1;
 }
@@ -835,7 +855,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Close(DWORD slotId)
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_Close: slotId=%lu", slotId);
 	
-	if (slotId >= 256 || !g_SaveSlots[slotId].inUse) {
+	if (g_SaveSlots.find(slotId) == g_SaveSlots.end() || !g_SaveSlots[slotId].inUse) {
 		LogWrite("[Uplay Emu] SAVE_Close: Invalid or unused slot");
 		return 0;
 	}
@@ -1017,20 +1037,14 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_Open: slotId=%lu, mode=%lu", slotId, mode);
 	
-	if (slotId >= 256) {
-		FileRead* ovr = (FileRead*)overlapped;
-		ovr->addr1++;
-		ovr->addr2 = 1;
-		ovr->addr3 = 0;
-		return 0;
-	}
+	// Initialize slot in map
+	SaveSlot slot = {0};
+	slot.mode = mode;
+	slot.slotId = slotId;
+	slot.inUse = true;
+	g_SaveSlots[slotId] = slot;
 	
-	// Initialize slot
-	SaveSlot* slot = &g_SaveSlots[slotId];
-	memset(slot, 0, sizeof(SaveSlot));
-	slot->mode = mode;
-	slot->slotId = slotId;
-	slot->inUse = true;
+	SaveSlot* slotPtr = &g_SaveSlots[slotId];
 	
 	char savePath[MAX_PATH];
 	GetSaveFilePath(slotId, savePath);
@@ -1040,14 +1054,15 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (hFile == INVALID_HANDLE_VALUE) {
 			LogWrite("[Uplay Emu] File not found: %s", savePath);
-			slot->inUse = false;
+			slotPtr->inUse = false;
+			g_SaveSlots.erase(slotId);
 			FileRead* ovr = (FileRead*)overlapped;
 			ovr->addr1++;
 			ovr->addr2 = 1;
 			ovr->addr3 = 0;
 			return 0;
 		}
-		slot->fileHandle = hFile;
+		slotPtr->fileHandle = hFile;
 	} else { // Write mode
 		// Create file with header if it doesn't exist
 		if (GetFileAttributesA(savePath) == INVALID_FILE_ATTRIBUTES) {
@@ -1060,7 +1075,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Open(DWORD slotId, DWORD mode, void* outHandle, void
 				CloseHandle(hFile);
 			}
 		}
-		slot->fileHandle = NULL;
+		slotPtr->fileHandle = NULL;
 	}
 	
 	// Write slot ID to output handle
@@ -1139,7 +1154,7 @@ UPLAY_EXPORT int UPLAY_SAVE_SetName(DWORD slotId, const char* nameUtf8)
 	LOG_FUNC();
 	LogWrite("[Uplay Emu] SAVE_SetName: slotId=%lu, name=%s", slotId, nameUtf8 ? nameUtf8 : "(null)");
 	
-	if (slotId < 256 && g_SaveSlots[slotId].inUse && nameUtf8) {
+	if (g_SaveSlots.find(slotId) != g_SaveSlots.end() && g_SaveSlots[slotId].inUse && nameUtf8) {
 		strncpy(g_SaveSlots[slotId].saveName, nameUtf8, 511);
 		g_SaveSlots[slotId].saveName[511] = 0;
 	}
@@ -1152,7 +1167,7 @@ UPLAY_EXPORT int UPLAY_SAVE_Write(DWORD slotId, DWORD numBytes, void* bufferPtr,
 	LogWrite("[Uplay Emu] SAVE_Write: slotId=%lu, bytes=%lu", slotId, numBytes);
 	
 	// Validate slot
-	if (slotId >= 256 || !g_SaveSlots[slotId].inUse) {
+	if (g_SaveSlots.find(slotId) == g_SaveSlots.end() || !g_SaveSlots[slotId].inUse) {
 		LogWrite("[Uplay Emu] SAVE_Write: Invalid or unused slot");
 		FileRead* ovr = (FileRead*)overlapped;
 		ovr->addr1++;
