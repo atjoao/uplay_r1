@@ -17,9 +17,12 @@
     #define EMULATOR_DLL_NAME "emu.upc_r1_loader.dll"
 #endif
 
+// known dll names
 static const char* g_TargetDlls[] = {
     "uplay_r1_loader64.dll",
     "uplay_r1_loader.dll",
+    "upc_r1_loader.dll",
+    "upc_r1_loader64.dll",
     "uplay_r164.dll",
     "uplay_r1.dll",
     nullptr
@@ -120,14 +123,12 @@ void HookAllExports(HMODULE uplayModule) {
         WORD ordinal = ords[i];
         FARPROC uplayFunc = (FARPROC)((BYTE*)uplayModule + funcs[ordinal]);
         
-        // Find this function in emulator
         FARPROC emuFunc = GetProcAddress(g_EmulatorModule, funcName);
         if (!emuFunc) {
             skippedCount++;
             continue;
         }
         
-        // Create hook using MinHook
         MH_STATUS status = MH_CreateHook((LPVOID)uplayFunc, (LPVOID)emuFunc, nullptr);
         if (status == MH_OK) {
             Log("[Uplay Hook] Hooked: %s (0x%p -> 0x%p)", funcName, uplayFunc, emuFunc);
@@ -137,7 +138,6 @@ void HookAllExports(HMODULE uplayModule) {
         }
     }
     
-    // Enable all hooks at once
     MH_STATUS enableStatus = MH_EnableHook(MH_ALL_HOOKS);
     Log("[Uplay Hook] MH_EnableHook(MH_ALL_HOOKS): %s", MH_StatusToString(enableStatus));
     
@@ -181,68 +181,6 @@ void TryHookUplay() {
     }
 }
 
-typedef LONG NTSTATUS;
-
-typedef struct _UNICODE_STRING {
-    USHORT Length;
-    USHORT MaximumLength;
-    PWSTR  Buffer;
-} UNICODE_STRING;
-
-typedef struct _LDR_DLL_LOADED_NOTIFICATION_DATA {
-    ULONG Flags;
-    const UNICODE_STRING* FullDllName;
-    const UNICODE_STRING* BaseDllName;
-    PVOID DllBase;
-    ULONG SizeOfImage;
-} LDR_DLL_LOADED_NOTIFICATION_DATA;
-
-typedef struct _LDR_DLL_NOTIFICATION_DATA {
-    LDR_DLL_LOADED_NOTIFICATION_DATA Loaded;
-} LDR_DLL_NOTIFICATION_DATA;
-
-typedef VOID (CALLBACK* LDR_DLL_NOTIFICATION_FUNCTION)(ULONG, const LDR_DLL_NOTIFICATION_DATA*, PVOID);
-typedef NTSTATUS (NTAPI* LdrRegisterDllNotification_t)(ULONG, LDR_DLL_NOTIFICATION_FUNCTION, PVOID, PVOID*);
-
-#define LDR_DLL_NOTIFICATION_REASON_LOADED 1
-
-static PVOID g_DllNotificationCookie = nullptr;
-
-VOID CALLBACK DllNotificationCallback(ULONG Reason, const LDR_DLL_NOTIFICATION_DATA* Data, PVOID Context) {
-    (void)Context;
-    
-    if (Reason != LDR_DLL_NOTIFICATION_REASON_LOADED) return;
-    
-    char dllName[MAX_PATH] = {0};
-    if (Data->Loaded.BaseDllName && Data->Loaded.BaseDllName->Buffer) {
-        WideCharToMultiByte(CP_ACP, 0, Data->Loaded.BaseDllName->Buffer, 
-                           Data->Loaded.BaseDllName->Length / 2, dllName, MAX_PATH, nullptr, nullptr);
-    }
-        
-    if (!g_HookedUplayModule && IsTargetDll(dllName)) {
-        LoadEmulatorDll();
-        if (g_EmulatorModule) {
-            HookAllExports((HMODULE)Data->Loaded.DllBase);
-            g_HookedUplayModule = (HMODULE)Data->Loaded.DllBase;
-        }
-    }
-}
-
-void RegisterDllNotification() {
-    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-    if (!ntdll) return;
-    
-    auto LdrRegisterDllNotification = (LdrRegisterDllNotification_t)
-        GetProcAddress(ntdll, "LdrRegisterDllNotification");
-    
-    if (LdrRegisterDllNotification) {
-        NTSTATUS status = LdrRegisterDllNotification(0, DllNotificationCallback, nullptr, &g_DllNotificationCookie);
-        if (status == 0) {
-            Log("[Uplay Hook] DLL notification registered");
-        }
-    }
-}
-
 void Initialize() {
     InitLog();
     MH_STATUS mhStatus = MH_Initialize();
@@ -252,8 +190,6 @@ void Initialize() {
         Log("[Uplay Hook] FATAL: MinHook initialization failed!");
         return;
     }
-    
-    RegisterDllNotification();
     
     TryHookUplay();
     
