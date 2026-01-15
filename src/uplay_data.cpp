@@ -1373,7 +1373,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "[Uplay]\n");
 			fprintf(iniFile, "; Application ownership status (0 = not owned, 1 = owned)\nIsAppOwned=1\n");
 			fprintf(iniFile, "; Connection mode (0 = online, 1 = offline)\nUplayConnection=0\n");
-			fprintf(iniFile, ";Application ID (change this to match your game's App ID)\nAppId=%d\n", uplayId);
+			fprintf(iniFile, "; Application ID (change this to match your game's App ID)\nAppId=%d\n", uplayId);
 			fprintf(iniFile, "; User credential\nUsername=Rat\n");
 			fprintf(iniFile, "Email=UplayEmu@rat43.com\n");
 			fprintf(iniFile, "Password=UplayPassword74\n");
@@ -1385,7 +1385,7 @@ UPLAY_EXPORT int UPLAY_Start(unsigned int uplayId)
 			fprintf(iniFile, "EnableConsole=0\n");
 			fprintf(iniFile, "\n; Enable Friends/Party features (0 = disabled, 1 = enabled, this is for returning values to the game in case of crashing)\nFriends=0\n");
 			fprintf(iniFile, "Party=0\n");
-			fprintf(iniFile, ";Steam integration\n[Steam]\nEnable=0\nId=0\n");
+			fprintf(iniFile, "; Steam integration\n; (if this is enabled on the game it wont be disabled)\n; (you can check this by checking if a game starts steam on exe open)\n[Steam]\nEnable=0\nId=0\n");
 
 			fclose(iniFile);
 		} else {
