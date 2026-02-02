@@ -1,17 +1,20 @@
-# Uplay Emulator Makefile
-# Supports: x64 (default), x86 (ARCH=32)
-
 # Architecture detection
 ifeq ($(ARCH),32)
     SUFFIX = 
     HDE = hde32
+    CROSS_PREFIX = i686-w64-mingw32-
 else
     SUFFIX = 64
     HDE = hde64
+    CROSS_PREFIX = x86_64-w64-mingw32-
 endif
 
 # Compiler settings
-CXX = clang++
+ifdef CROSS
+    CXX = $(CROSS_PREFIX)clang++
+else
+    CXX = clang++
+endif
 CXXFLAGS = -shared -static -O3 -Oz
 INCLUDES = -I src -I src/minhook/include
 

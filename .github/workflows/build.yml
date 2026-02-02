@@ -9,18 +9,16 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     
     strategy:
       matrix:
         include:
           - arch: x64
-            msystem: MINGW64
             make_arch: "64"
             suffix: "64"
             asi_loader_arch: "_x64"
           - arch: x86
-            msystem: MINGW32
             make_arch: "32"
             suffix: ""
             asi_loader_arch: ""
@@ -29,16 +27,13 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup MSYS2
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: ${{ matrix.msystem }}
-        install: mingw-w64-${{ matrix.arch == 'x64' && 'x86_64' || 'i686' }}-clang make
-        cache: true
+    - name: Setup compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang lld mingw-w64
         
     - name: Build with Make
-      shell: msys2 {0}
-      run: make ARCH=${{ matrix.make_arch }}
+      run: make ARCH=${{ matrix.make_arch }} CROSS=1
 
     - name: Cache Steamworks SDK
       uses: actions/cache@v4
@@ -50,12 +45,11 @@ jobs:
     - name: Download Steamworks SDK
       if: steps.cache-steamworks.outputs.cache-hit != 'true'
       run: |
-        if ("${{ matrix.arch }}" -eq "x64") {
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/win64/steam_api64.dll" -OutFile "steam_api64.dll"
-        } else {
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/steam_api.dll" -OutFile "steam_api.dll"
-        }
-      shell: pwsh
+        if [ "${{ matrix.arch }}" = "x64" ]; then
+          curl -L -o "steam_api64.dll" "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/win64/steam_api64.dll"
+        else
+          curl -L -o "steam_api.dll" "https://raw.githubusercontent.com/rlabrecque/SteamworksSDK/main/redistributable_bin/steam_api.dll"
+        fi
 
     - name: Cache Ultimate ASI Loader
       uses: actions/cache@v4
@@ -67,14 +61,9 @@ jobs:
     - name: Download Ultimate ASI Loader
       if: steps.cache-asi-loader.outputs.cache-hit != 'true'
       run: |
-        $asiLoaderUrl = "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader${{ matrix.asi_loader_arch }}.zip"
-        Invoke-WebRequest -Uri $asiLoaderUrl -OutFile "asi_loader.zip"
-        Expand-Archive -Path "asi_loader.zip" -DestinationPath "asi_loader_temp"
-        $dinput8 = Get-ChildItem -Path "asi_loader_temp" -Recurse -Filter "dinput8.dll" | Select-Object -First 1
-        if ($dinput8) {
-          Copy-Item $dinput8.FullName -Destination "dinput8.dll"
-        }
-      shell: pwsh
+        curl -L -o "asi_loader.zip" "https://github.com/ThirteenAG/Ultimate-ASI-Loader/releases/latest/download/Ultimate-ASI-Loader${{ matrix.asi_loader_arch }}.zip"
+        unzip asi_loader.zip -d asi_loader_temp
+        find asi_loader_temp -name "dinput8.dll" -exec cp {} dinput8.dll \;
 
     - name: Cache licenses
       uses: actions/cache@v4
@@ -88,14 +77,18 @@ jobs:
     - name: Download licenses
       if: steps.cache-licenses.outputs.cache-hit != 'true'
       run: |
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/refs/heads/master/license" -OutFile "LICENSE-ASI-Loader.txt"
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/TsudaKageyu/minhook/master/LICENSE.txt" -OutFile "LICENSE-MinHook.txt"
-      shell: pwsh
+        curl -L -o "LICENSE-ASI-Loader.txt" "https://raw.githubusercontent.com/ThirteenAG/Ultimate-ASI-Loader/refs/heads/master/license"
+        curl -L -o "LICENSE-MinHook.txt" "https://raw.githubusercontent.com/TsudaKageyu/minhook/master/LICENSE.txt"
       
     - name: Create ASI zip
       run: |
-        Compress-Archive -Path "emu.upc_r1_loader${{ matrix.suffix }}.dll", "uplay_asi${{ matrix.suffix }}.asi", "dinput8.dll", "steam_api${{ matrix.suffix }}.dll", "LICENSE-ASI-Loader.txt", "LICENSE-MinHook.txt" -DestinationPath "uplay_emu_asi_${{ matrix.arch }}.zip"
-      shell: pwsh
+        zip "uplay_emu_asi_${{ matrix.arch }}.zip" \
+          "emu.upc_r1_loader${{ matrix.suffix }}.dll" \
+          "uplay_asi${{ matrix.suffix }}.asi" \
+          "dinput8.dll" \
+          "steam_api${{ matrix.suffix }}.dll" \
+          "LICENSE-ASI-Loader.txt" \
+          "LICENSE-MinHook.txt"
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
