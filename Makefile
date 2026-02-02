@@ -2,20 +2,20 @@
 ifeq ($(ARCH),32)
     SUFFIX = 
     HDE = hde32
-    CROSS_PREFIX = i686-w64-mingw32-
+    TARGET = i686-w64-mingw32
 else
     SUFFIX = 64
     HDE = hde64
-    CROSS_PREFIX = x86_64-w64-mingw32-
+    TARGET = x86_64-w64-mingw32
 endif
 
 # Compiler settings
+CXX = clang++
 ifdef CROSS
-    CXX = $(CROSS_PREFIX)clang++
+    CXXFLAGS = -shared -static -O3 -Oz -fuse-ld=lld --target=$(TARGET)
 else
-    CXX = clang++
+    CXXFLAGS = -shared -static -O3 -Oz
 endif
-CXXFLAGS = -shared -static -O3 -Oz
 INCLUDES = -I src -I src/minhook/include
 
 # Output files
