@@ -26,11 +26,11 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Setup compiler
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y clang lld mingw-w64
+    
+    - name: Setup Compiler || Cache APT
+      uses: awalsh128/cache-apt-pkgs-action@latest
+      with:
+        packages: clang lld mingw-w64
         
     - name: Build with Make
       run: make ARCH=${{ matrix.make_arch }} CROSS=1
